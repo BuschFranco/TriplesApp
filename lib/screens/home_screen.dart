@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import '../data/courts.dart';
@@ -64,6 +65,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchCtrl = TextEditingController();
   List<_Prediction> _predictions = [];
   bool _showSearch = false;
+  bool _locating = false;
 
   Court get _court => kCourts[_index];
 
@@ -328,12 +330,55 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _goToMyLocation() async {
+    if (_locating) return;
+    setState(() => _locating = true);
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
+      if (permission == LocationPermission.deniedForever) return;
+
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      await _mapCtrl?.animateCamera(
+        CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 15),
+      );
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
   Widget _locateBtn() {
-    return _glassContainer(
-      width: 48,
-      height: 48,
-      radius: 16,
-      child: Icon(Icons.my_location, color: AppColors.accent, size: 22),
+    return GestureDetector(
+      onTap: _goToMyLocation,
+      child: _glassContainer(
+        width: 48,
+        height: 48,
+        radius: 16,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          child: _locating
+              ? SizedBox(
+                  key: const ValueKey('loading'),
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.accent,
+                  ),
+                )
+              : Icon(
+                  key: const ValueKey('icon'),
+                  Icons.my_location,
+                  color: AppColors.accent,
+                  size: 22,
+                ),
+        ),
+      ),
     );
   }
 
