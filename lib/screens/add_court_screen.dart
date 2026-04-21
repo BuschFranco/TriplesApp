@@ -40,6 +40,9 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
   String _vibe = 'Casual';
   bool _free = true;
   bool _lit = false;
+  bool _hasCost = false;
+  final _priceCtrl = TextEditingController();
+  String _priceUnit = 'hora';
   final Set<String> _amenities = {};
   LatLng _pinLocation = const LatLng(-34.6037, -58.3816);
   GoogleMapController? _mapCtrl;
@@ -61,6 +64,7 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _hoursCtrl.dispose();
+    _priceCtrl.dispose();
     _mapCtrl?.dispose();
     super.dispose();
   }
@@ -164,6 +168,11 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
                     const SizedBox(height: 24),
                     _sectionTitle('Características'),
                     _toggleRow(),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeInOut,
+                      child: _hasCost ? _priceField() : const SizedBox.shrink(),
+                    ),
                     const SizedBox(height: 24),
                     _sectionTitle('Comodidades'),
                     _amenitiesGrid(),
@@ -402,12 +411,105 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
   }
 
   Widget _toggleRow() {
-    return Row(
+    return Column(
       children: [
-        Expanded(child: _toggle('Gratis', Icons.attach_money, _free, (v) => setState(() => _free = v))),
-        const SizedBox(width: 10),
-        Expanded(child: _toggle('Iluminada', Icons.lightbulb_outline, _lit, (v) => setState(() => _lit = v))),
+        Row(
+          children: [
+            Expanded(child: _toggle('Gratis', Icons.attach_money, _free, (v) => setState(() => _free = v))),
+            const SizedBox(width: 10),
+            Expanded(child: _toggle('Iluminada', Icons.lightbulb_outline, _lit, (v) => setState(() => _lit = v))),
+            const SizedBox(width: 10),
+            Expanded(child: _toggle('Precio', Icons.monetization_on_outlined, _hasCost, (v) => setState(() => _hasCost = v))),
+          ],
+        ),
       ],
+    );
+  }
+
+  Widget _priceField() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Unit selector
+          Row(
+            children: [
+              _priceUnitChip('hora'),
+              const SizedBox(width: 8),
+              _priceUnitChip('partido'),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // Price input
+          ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xE011181F),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.accent.withAlpha(80)),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Row(
+                  children: [
+                    Text('\$', style: AppText.archivo(size: 18, weight: FontWeight.w700, color: AppColors.accent)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _priceCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: false),
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                        style: AppText.archivo(size: 18, weight: FontWeight.w700),
+                        cursorColor: AppColors.accent,
+                        decoration: InputDecoration(
+                          hintText: '0',
+                          hintStyle: AppText.archivo(size: 18, weight: FontWeight.w700, color: AppColors.white(0.25)),
+                          border: InputBorder.none,
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      'por $_priceUnit',
+                      style: AppText.grotesk(size: 13, color: AppColors.white(0.45)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _priceUnitChip(String unit) {
+    final active = _priceUnit == unit;
+    return GestureDetector(
+      onTap: () => setState(() => _priceUnit = unit),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: active ? AppColors.accent.withAlpha(40) : const Color(0x331A2430),
+          borderRadius: BorderRadius.circular(100),
+          border: Border.all(
+            color: active ? AppColors.accent.withAlpha(120) : AppColors.white(0.1),
+          ),
+        ),
+        child: Text(
+          'Por $unit',
+          style: AppText.grotesk(
+            size: 12,
+            weight: active ? FontWeight.w700 : FontWeight.w500,
+            color: active ? AppColors.accent : AppColors.white(0.6),
+          ),
+        ),
+      ),
     );
   }
 
