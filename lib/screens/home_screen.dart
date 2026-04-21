@@ -1,11 +1,20 @@
-import 'dart:ui';
+import 'dart:async';
+import 'dart:convert';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import '../data/courts.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_chip.dart';
-import '../widgets/bball_glyph.dart';
 import '../widgets/rating_badge.dart';
 import '../widgets/status_dot.dart';
+
+const _kMapsApiKey = String.fromEnvironment(
+  'MAPS_API_KEY',
+  defaultValue: 'AIzaSyA8CPXNiny4hDxakznny0eoY229nmRR9Ng',
+);
 
 class HomeScreen extends StatefulWidget {
   final ValueChanged<String>? onSelectCourt;
@@ -19,44 +28,282 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _index = 0;
+  final Completer<GoogleMapController> _mapController = Completer();
+  Set<Marker> _markers = {};
+  bool _locating = false;
+
+  final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
+  List<_PlaceSuggestion> _suggestions = [];
+  Timer? _debounce;
+
+  // Buenos Aires center
+  static const _initialCamera = CameraPosition(
+    target: LatLng(-34.5995, -58.3816),
+    zoom: 12.5,
+  );
 
   Court get _court => kCourts[_index];
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _buildMarkers());
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocus.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  void _onSearchChanged(String query) {
+    _debounce?.cancel();
+    if (query.trim().isEmpty) {
+      setState(() => _suggestions = []);
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 400), () => _fetchSuggestions(query));
+  }
+
+  Future<void> _fetchSuggestions(String query) async {
+    final uri = Uri.parse(
+      'https://maps.googleapis.com/maps/api/place/autocomplete/json'
+      '?input=${Uri.encodeComponent(query)}'
+      '&key=$_kMapsApiKey'
+      '&language=es'
+      '&components=country:ar'
+      '&types=geocode%7Cestablishment',
+    );
+    try {
+      final res = await http.get(uri);
+      if (!mounted) return;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final predictions = data['predictions'] as List? ?? [];
+      setState(() {
+        _suggestions = predictions.map((p) => _PlaceSuggestion(
+          placeId: p['place_id'] as String,
+          mainText: (p['structured_formatting']?['main_text'] as String?) ?? p['description'] as String,
+          secondaryText: (p['structured_formatting']?['secondary_text'] as String?) ?? '',
+        )).toList();
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _selectSuggestion(_PlaceSuggestion s) async {
+    _searchController.text = s.mainText;
+    _searchFocus.unfocus();
+    setState(() => _suggestions = []);
+
+    final uri = Uri.parse(
+      'https://maps.googleapis.com/maps/api/place/details/json'
+      '?place_id=${s.placeId}'
+      '&key=$_kMapsApiKey'
+      '&fields=geometry',
+    );
+    try {
+      final res = await http.get(uri);
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final loc = data['result']['geometry']['location'];
+      await _animateTo(LatLng((loc['lat'] as num).toDouble(), (loc['lng'] as num).toDouble()));
+    } catch (_) {}
+  }
+
+  void _clearSearch() {
+    _searchController.clear();
+    setState(() => _suggestions = []);
+    _searchFocus.unfocus();
+  }
+
+  Future<void> _buildMarkers() async {
+    final markers = <Marker>{};
+    for (var i = 0; i < kCourts.length; i++) {
+      final idx = i; // captura por valor — i muta entre iteraciones
+      final court = kCourts[i];
+      final active = i == _index;
+      final icon = await _buildPinBitmap(court.name.split(' ').first, active);
+      markers.add(Marker(
+        markerId: MarkerId(court.id),
+        position: LatLng(court.lat, court.lng),
+        icon: icon,
+        anchor: const Offset(0.5, 1.0),
+        onTap: () {
+          setState(() => _index = idx);
+          _buildMarkers();
+          _animateTo(LatLng(court.lat, court.lng));
+        },
+      ));
+    }
+    if (mounted) setState(() => _markers = markers);
+  }
+
+  Future<BitmapDescriptor> _buildPinBitmap(String label, bool active) async {
+    const double r = 3.0;
+    final double pw = active
+        ? (label.length * 8.0 + 48.0).clamp(88.0, 140.0)
+        : 44.0;
+    const double ph = 36.0;
+    const double th = 8.0;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.scale(r);
+
+    final bg = active ? const Color(0xFFFF6B1A) : const Color(0xF211181F);
+    final border = active ? const Color(0xFFFF6B1A) : const Color(0x33FFFFFF);
+
+    // Pill background
+    final rrect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(1, 1, pw - 2, ph - 2),
+      const Radius.circular(13),
+    );
+    canvas.drawRRect(rrect, Paint()..color = bg);
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..color = border
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+
+    // Triangle tail
+    canvas.drawPath(
+      Path()
+        ..moveTo(pw / 2 - 5, ph - 1)
+        ..lineTo(pw / 2 + 5, ph - 1)
+        ..lineTo(pw / 2, ph + th)
+        ..close(),
+      Paint()..color = bg,
+    );
+
+    // Basketball glyph
+    final gp = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..isAntiAlias = true;
+    const cx = 22.0;
+    const cy = ph / 2;
+    canvas.drawCircle(const Offset(cx, cy), 8, gp);
+    canvas.drawLine(const Offset(cx - 8, cy), const Offset(cx + 8, cy), gp);
+    canvas.drawArc(
+      Rect.fromCircle(center: const Offset(cx - 3, cy), radius: 6.5),
+      -0.4, 0.8, false, gp,
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: const Offset(cx + 3, cy), radius: 6.5),
+      2.74, 0.8, false, gp,
+    );
+
+    // Label text (active only)
+    if (active) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: label.toUpperCase(),
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.5,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(38, (ph - tp.height) / 2));
+    }
+
+    final pic = recorder.endRecording();
+    final img = await pic.toImage(
+      (pw * r).toInt(),
+      ((ph + th) * r).toInt(),
+    );
+    final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
+    return BitmapDescriptor.fromBytes(bytes!.buffer.asUint8List());
+  }
+
+  Future<void> _animateTo(LatLng pos) async {
+    final ctrl = await _mapController.future;
+    ctrl.animateCamera(CameraUpdate.newLatLng(pos));
+  }
+
+  void _changeIndex(int newIndex) {
+    setState(() => _index = newIndex);
+    _buildMarkers();
+    _animateTo(LatLng(kCourts[newIndex].lat, kCourts[newIndex].lng));
+  }
+
+  Future<void> _locateUser() async {
+    setState(() => _locating = true);
+    try {
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) return;
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      await _animateTo(LatLng(pos.latitude, pos.longitude));
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
-      color: AppColors.bg,
-      child: Stack(
-        children: [
-          _MapCanvas(
-            activeIndex: _index,
-            onPin: (i) => setState(() => _index = i),
+    return Stack(
+      children: [
+        GoogleMap(
+          initialCameraPosition: _initialCamera,
+          markers: _markers,
+          myLocationEnabled: true,
+          myLocationButtonEnabled: false,
+          zoomControlsEnabled: false,
+          mapToolbarEnabled: false,
+          compassEnabled: false,
+          onMapCreated: (ctrl) {
+            ctrl.setMapStyle(_kDarkMapStyle);
+            _mapController.complete(ctrl);
+          },
+          onTap: (_) => _clearSearch(),
+        ),
+        Positioned(
+          top: 112,
+          left: 0,
+          right: 0,
+          child: _quickChips(),
+        ),
+        Positioned(
+          right: 16,
+          bottom: 260,
+          child: _locateBtn(),
+        ),
+        Positioned(
+          bottom: 110,
+          left: 0,
+          right: 0,
+          child: _bottomSwipe(),
+        ),
+        // Search bar + suggestions van al final para estar encima de todo
+        Positioned(
+          top: 54,
+          left: 16,
+          right: 16,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _searchBar(),
+              if (_suggestions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _suggestionsList(),
+              ],
+            ],
           ),
-          Positioned(
-            top: 54,
-            left: 16,
-            right: 16,
-            child: _searchBar(),
-          ),
-          Positioned(
-            top: 112,
-            left: 0,
-            right: 0,
-            child: _quickChips(),
-          ),
-          Positioned(
-            right: 16,
-            bottom: 260,
-            child: _locateBtn(),
-          ),
-          Positioned(
-            bottom: 110,
-            left: 0,
-            right: 0,
-            child: _bottomSwipe(),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -65,19 +312,36 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Expanded(
           child: _glassContainer(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
             radius: 100,
             child: Row(
               children: [
                 Icon(Icons.search, size: 16, color: AppColors.white(0.5)),
                 const SizedBox(width: 10),
-                Text(
-                  'Buscar cancha o barrio',
-                  style: AppText.grotesk(
-                    size: 14,
-                    color: AppColors.white(0.55),
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    focusNode: _searchFocus,
+                    onChanged: _onSearchChanged,
+                    style: AppText.grotesk(size: 14),
+                    cursorColor: AppColors.accent,
+                    decoration: InputDecoration(
+                      hintText: 'Buscar barrio',
+                      hintStyle: AppText.grotesk(
+                        size: 14,
+                        color: AppColors.white(0.45),
+                      ),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
                   ),
                 ),
+                if (_searchController.text.isNotEmpty)
+                  GestureDetector(
+                    onTap: _clearSearch,
+                    child: Icon(Icons.close, size: 16, color: AppColors.white(0.4)),
+                  ),
               ],
             ),
           ),
@@ -95,6 +359,73 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _suggestionsList() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xF011181F),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: AppColors.white(0.1)),
+          ),
+          child: ListView.separated(
+            shrinkWrap: true,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            itemCount: _suggestions.length,
+            separatorBuilder: (_, __) => Divider(
+              height: 1,
+              color: AppColors.white(0.06),
+              indent: 16,
+              endIndent: 16,
+            ),
+            itemBuilder: (_, i) {
+              final s = _suggestions[i];
+              return InkWell(
+                onTap: () => _selectSuggestion(s),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                  child: Row(
+                    children: [
+                      Icon(Icons.location_on_outlined,
+                          size: 16, color: AppColors.accent),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              s.mainText,
+                              style: AppText.grotesk(
+                                size: 13,
+                                weight: FontWeight.w600,
+                              ),
+                            ),
+                            if (s.secondaryText.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                s.secondaryText,
+                                style: AppText.grotesk(
+                                  size: 11,
+                                  color: AppColors.white(0.45),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
     );
   }
 
@@ -122,11 +453,25 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _locateBtn() {
-    return _glassContainer(
-      width: 48,
-      height: 48,
-      radius: 16,
-      child: Icon(Icons.my_location, color: AppColors.accent, size: 22),
+    return GestureDetector(
+      onTap: _locating ? null : _locateUser,
+      child: _glassContainer(
+        width: 48,
+        height: 48,
+        radius: 16,
+        child: Center(
+          child: _locating
+              ? SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.accent,
+                  ),
+                )
+              : Icon(Icons.my_location, color: AppColors.accent, size: 22),
+        ),
+      ),
     );
   }
 
@@ -138,10 +483,9 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _CourtSwipeCard(
             court: _court,
             onSelect: () => widget.onSelectCourt?.call(_court.id),
-            onPrev: () => setState(() =>
-                _index = (_index - 1 + kCourts.length) % kCourts.length),
-            onNext: () =>
-                setState(() => _index = (_index + 1) % kCourts.length),
+            onPrev: () =>
+                _changeIndex((_index - 1 + kCourts.length) % kCourts.length),
+            onNext: () => _changeIndex((_index + 1) % kCourts.length),
           ),
         ),
         const SizedBox(height: 10),
@@ -178,7 +522,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
           width: width,
           height: height,
@@ -202,246 +546,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _MapCanvas extends StatelessWidget {
-  final int activeIndex;
-  final ValueChanged<int> onPin;
-
-  const _MapCanvas({required this.activeIndex, required this.onPin});
-
-  static const _positions = [
-    Offset(0.45, 0.42),
-    Offset(0.70, 0.25),
-    Offset(0.25, 0.58),
-    Offset(0.82, 0.48),
-    Offset(0.55, 0.75),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0xFF0D1520), Color(0xFF0A0F14)],
-            ),
-          ),
-        ),
-        CustomPaint(painter: _MapBgPainter(), child: const SizedBox.expand()),
-        // "You are here" pulse
-        const Center(child: _PulsingDot()),
-        // Pins
-        LayoutBuilder(builder: (_, c) {
-          return Stack(
-            children: [
-              for (var i = 0; i < kCourts.length; i++)
-                Positioned(
-                  left: c.maxWidth * _positions[i].dx - 40,
-                  top: c.maxHeight * _positions[i].dy - 40,
-                  child: _Pin(
-                    court: kCourts[i],
-                    active: i == activeIndex,
-                    onTap: () => onPin(i),
-                  ),
-                ),
-            ],
-          );
-        }),
-      ],
-    );
-  }
-}
-
-class _MapBgPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final streetPaint = Paint()
-      ..color = AppColors.white(0.04)
-      ..strokeWidth = 1;
-    canvas.save();
-    canvas.translate(size.width / 2, size.height / 2);
-    canvas.rotate(0.31);
-    canvas.translate(-size.width / 2, -size.height / 2);
-    for (double x = -size.width; x < size.width * 2; x += 60) {
-      canvas.drawLine(Offset(x, -size.height), Offset(x, size.height * 2), streetPaint);
-    }
-    for (double y = -size.height; y < size.height * 2; y += 60) {
-      canvas.drawLine(Offset(-size.width, y), Offset(size.width * 2, y), streetPaint);
-    }
-    canvas.restore();
-
-    // River blob
-    final river = Paint()..color = const Color(0x1F285078);
-    final path = Path()
-      ..moveTo(-20, size.height * 0.7)
-      ..quadraticBezierTo(size.width * 0.2, size.height * 0.65, size.width * 0.5,
-          size.height * 0.75)
-      ..quadraticBezierTo(size.width * 0.8, size.height * 0.85, size.width + 20,
-          size.height * 0.78)
-      ..lineTo(size.width + 20, size.height)
-      ..lineTo(-20, size.height)
-      ..close();
-    canvas.drawPath(path, river);
-  }
-
-  @override
-  bool shouldRepaint(covariant _MapBgPainter oldDelegate) => false;
-}
-
-class _PulsingDot extends StatefulWidget {
-  const _PulsingDot();
-  @override
-  State<_PulsingDot> createState() => _PulsingDotState();
-}
-
-class _PulsingDotState extends State<_PulsingDot>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 60,
-      height: 60,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          AnimatedBuilder(
-            animation: _ctrl,
-            builder: (_, __) => Container(
-              width: 18 + _ctrl.value * 40,
-              height: 18 + _ctrl.value * 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: AppColors.accent.withAlpha(
-                      ((1 - _ctrl.value) * 100).toInt()),
-                  width: 2,
-                ),
-              ),
-            ),
-          ),
-          Container(
-            width: 18,
-            height: 18,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.accent,
-              boxShadow: [
-                BoxShadow(color: AppColors.accent, blurRadius: 20),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Pin extends StatelessWidget {
-  final Court court;
-  final bool active;
-  final VoidCallback onTap;
-
-  const _Pin({required this.court, required this.active, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedScale(
-        scale: active ? 1.15 : 1,
-        duration: const Duration(milliseconds: 250),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: active ? 10 : 8,
-                vertical: active ? 7 : 6,
-              ),
-              decoration: BoxDecoration(
-                color: active ? AppColors.accent : const Color(0xF211181F),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: active ? AppColors.accent : AppColors.white(0.2),
-                  width: 2,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: active
-                        ? AppColors.accent.withAlpha(136)
-                        : AppColors.black(0.4),
-                    blurRadius: active ? 20 : 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const BBallGlyph(size: 14),
-                  if (active) ...[
-                    const SizedBox(width: 6),
-                    Text(
-                      court.name.split(' ').first,
-                      style: AppText.grotesk(
-                        size: 11,
-                        weight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            CustomPaint(
-              size: const Size(10, 7),
-              painter: _PinTailPainter(
-                  color: active ? AppColors.accent : const Color(0xF211181F)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PinTailPainter extends CustomPainter {
-  final Color color;
-  _PinTailPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final path = Path()
-      ..moveTo(0, 0)
-      ..lineTo(size.width, 0)
-      ..lineTo(size.width / 2, size.height)
-      ..close();
-    canvas.drawPath(path, Paint()..color = color);
-  }
-
-  @override
-  bool shouldRepaint(covariant _PinTailPainter old) => old.color != color;
-}
-
 class _CourtSwipeCard extends StatelessWidget {
   final Court court;
   final VoidCallback onSelect;
@@ -460,7 +564,7 @@ class _CourtSwipeCard extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(24),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
         child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -497,7 +601,8 @@ class _CourtSwipeCard extends StatelessWidget {
                     top: 6,
                     left: 6,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 3),
                       decoration: BoxDecoration(
                         color: AppColors.black(0.75),
                         borderRadius: BorderRadius.circular(6),
@@ -530,7 +635,8 @@ class _CourtSwipeCard extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       court.name,
-                      style: AppText.archivo(size: 18, weight: FontWeight.w800),
+                      style:
+                          AppText.archivo(size: 18, weight: FontWeight.w800),
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
@@ -547,7 +653,8 @@ class _CourtSwipeCard extends StatelessWidget {
                           child: GestureDetector(
                             onTap: onSelect,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 8),
                               decoration: BoxDecoration(
                                 color: AppColors.accent,
                                 borderRadius: BorderRadius.circular(100),
@@ -596,3 +703,41 @@ class _CourtSwipeCard extends StatelessWidget {
     );
   }
 }
+
+class _PlaceSuggestion {
+  final String placeId;
+  final String mainText;
+  final String secondaryText;
+  const _PlaceSuggestion({
+    required this.placeId,
+    required this.mainText,
+    required this.secondaryText,
+  });
+}
+
+const String _kDarkMapStyle = '''
+[
+  {"elementType":"geometry","stylers":[{"color":"#0d1520"}]},
+  {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#4a5a6a"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#0a0f14"}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#1a2430"}]},
+  {"featureType":"administrative.locality","elementType":"labels.text.fill","stylers":[{"color":"#7a8a9a"}]},
+  {"featureType":"administrative.land_parcel","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi.sports_complex","stylers":[{"visibility":"on"}]},
+  {"featureType":"poi.sports_complex","elementType":"geometry","stylers":[{"color":"#0f2a1a"}]},
+  {"featureType":"poi.sports_complex","elementType":"labels.text.fill","stylers":[{"color":"#4ADE80"}]},
+  {"featureType":"poi.sports_complex","elementType":"labels.icon","stylers":[{"visibility":"on"},{"color":"#FF6B1A"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#1a2430"}]},
+  {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#111821"}]},
+  {"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#3a4a5a"}]},
+  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#1e2e3e"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#253545"}]},
+  {"featureType":"road.highway","elementType":"geometry.stroke","stylers":[{"color":"#1a2430"}]},
+  {"featureType":"road.highway","elementType":"labels.text.fill","stylers":[{"color":"#4a5a6a"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#071016"}]},
+  {"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#253545"}]}
+]
+''';
