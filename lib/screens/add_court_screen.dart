@@ -273,69 +273,70 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
   }
 
   Widget _mapPicker() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(18),
-      child: SizedBox(
-        height: 220,
-        child: Stack(
-          children: [
-            GoogleMap(
-              onMapCreated: (ctrl) {
-                _mapCtrl = ctrl;
-                ctrl.setMapStyle(_kMapStyle);
-              },
-              initialCameraPosition: CameraPosition(target: _pinLocation, zoom: 15),
-              onCameraMove: (pos) => _pinLocation = pos.target,
-              zoomControlsEnabled: false,
-              myLocationButtonEnabled: false,
-              compassEnabled: false,
-              mapToolbarEnabled: false,
-              tiltGesturesEnabled: false,
+    return SizedBox(
+      width: double.infinity,
+      height: 220,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          GoogleMap(
+            style: _kMapStyle,
+            onMapCreated: (ctrl) {
+              _mapCtrl = ctrl;
+              ctrl.setMapStyle(_kMapStyle);
+            },
+            initialCameraPosition: CameraPosition(target: _pinLocation, zoom: 15),
+            onCameraMove: (pos) => _pinLocation = pos.target,
+            zoomControlsEnabled: false,
+            myLocationButtonEnabled: false,
+            compassEnabled: false,
+            mapToolbarEnabled: false,
+            tiltGesturesEnabled: false,
+          ),
+          // Centered crosshair pin
+          const Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.location_pin, color: AppColors.accent, size: 40),
+                SizedBox(height: 20),
+              ],
             ),
-            // Centered crosshair pin
-            const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.location_pin, color: AppColors.accent, size: 40),
-                  SizedBox(height: 20),
-                ],
-              ),
-            ),
-            // Locate me button
-            Positioned(
-              right: 10,
-              bottom: 10,
-              child: GestureDetector(
-                onTap: _locateMe,
-                child: ClipRRect(
+          ),
+          // Locate me button
+          Positioned(
+            right: 10,
+            bottom: 10,
+            child: GestureDetector(
+              onTap: _locateMe,
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: const Color(0xE011181F),
                   borderRadius: BorderRadius.circular(10),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: const Color(0xE011181F),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppColors.white(0.1)),
-                      ),
-                      child: _locating
-                          ? Padding(
-                              padding: const EdgeInsets.all(9),
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: AppColors.accent,
-                              ),
-                            )
-                          : Icon(Icons.my_location, color: AppColors.accent, size: 18),
-                    ),
-                  ),
+                  border: Border.all(color: AppColors.white(0.1)),
                 ),
+                child: _locating
+                    ? Padding(
+                        padding: const EdgeInsets.all(9),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.accent,
+                        ),
+                      )
+                    : Icon(Icons.my_location, color: AppColors.accent, size: 18),
               ),
             ),
-          ],
-        ),
+          ),
+          // Paints background color over corners to simulate border-radius
+          // (ClipRRect breaks Android platform view rendering)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(painter: _MapCornerPainter(AppColors.bg)),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -634,4 +635,27 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
       ),
     );
   }
+}
+
+class _MapCornerPainter extends CustomPainter {
+  final Color color;
+  const _MapCornerPainter(this.color);
+
+  static const _radius = 18.0;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final path = Path()
+      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..addRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, size.width, size.height),
+        const Radius.circular(_radius),
+      ))
+      ..fillType = PathFillType.evenOdd;
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(_MapCornerPainter old) => old.color != color;
 }
