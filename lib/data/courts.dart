@@ -19,6 +19,8 @@ class Court {
   final String hours;
   final List<String> badges;
   final String desc;
+  final double lat;
+  final double lng;
 
   const Court({
     required this.id,
@@ -39,6 +41,8 @@ class Court {
     required this.hours,
     required this.badges,
     required this.desc,
+    required this.lat,
+    required this.lng,
   });
 }
 
@@ -62,6 +66,8 @@ const List<Court> kCourts = [
     hours: '06:00 — 23:00',
     badges: ['Iluminada', 'Gratis', 'Popular'],
     desc: 'Cancha clásica del barrio con buena iluminación nocturna. Se arman pickups todos los martes y jueves.',
+    lat: -34.6260,
+    lng: -58.3699,
   ),
   Court(
     id: 'poly-nort',
@@ -82,6 +88,8 @@ const List<Court> kCourts = [
     hours: '07:00 — 22:00',
     badges: ['Parquet', 'Reserva', 'Vestuarios'],
     desc: 'Cancha reglamentaria FIBA con parquet profesional. Se alquila por hora con reserva previa.',
+    lat: -34.5573,
+    lng: -58.4495,
   ),
   Court(
     id: 'plaza-arm',
@@ -102,6 +110,8 @@ const List<Court> kCourts = [
     hours: 'Abierto 24h',
     badges: ['Gratis', 'Casual'],
     desc: 'Ambiente relajado, ideal para tirar un rato. Sin luces, se juega hasta el atardecer.',
+    lat: -34.5886,
+    lng: -58.4226,
   ),
   Court(
     id: 'club-river',
@@ -122,6 +132,8 @@ const List<Court> kCourts = [
     hours: '08:00 — 23:00',
     badges: ['Profesional', 'Parquet', 'Torneos'],
     desc: 'Complejo con 3 canchas. Liga interna los fines de semana.',
+    lat: -34.5452,
+    lng: -58.4500,
   ),
   Court(
     id: 'patio-bom',
@@ -142,6 +154,8 @@ const List<Court> kCourts = [
     hours: '06:00 — 00:00',
     badges: ['Street', 'Gratis', 'Iluminada'],
     desc: 'Streetball puro. Asfalto gastado con historia.',
+    lat: -34.6358,
+    lng: -58.3624,
   ),
 ];
 

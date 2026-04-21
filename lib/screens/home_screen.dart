@@ -1,11 +1,52 @@
+import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
 import '../data/courts.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_chip.dart';
-import '../widgets/bball_glyph.dart';
 import '../widgets/rating_badge.dart';
 import '../widgets/status_dot.dart';
+
+const _kApiKey = String.fromEnvironment('MAPS_API_KEY');
+
+const _kMapStyle = '''
+[
+  {"elementType":"geometry","stylers":[{"color":"#0d1520"}]},
+  {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#8896a7"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#0a0f14"}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#152030"}]},
+  {"featureType":"administrative.country","elementType":"labels.text.fill","stylers":[{"color":"#9e9e9e"}]},
+  {"featureType":"administrative.land_parcel","stylers":[{"visibility":"off"}]},
+  {"featureType":"administrative.locality","elementType":"labels.text.fill","stylers":[{"color":"#c0c8d8"}]},
+  {"featureType":"administrative.neighborhood","elementType":"labels.text.fill","stylers":[{"color":"#8896a7"}]},
+  {"featureType":"poi","stylers":[{"visibility":"off"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#1a2a3a"}]},
+  {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#0d1a26"}]},
+  {"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#8896a7"}]},
+  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#1e3040"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#1a3a52"}]},
+  {"featureType":"road.highway","elementType":"geometry.stroke","stylers":[{"color":"#0d2030"}]},
+  {"featureType":"road.highway","elementType":"labels.text.fill","stylers":[{"color":"#b0c4d4"}]},
+  {"featureType":"road.local","elementType":"labels.text.fill","stylers":[{"color":"#586878"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#0a1929"}]},
+  {"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#3d5060"}]}
+]
+''';
+
+class _Prediction {
+  final String placeId;
+  final String mainText;
+  final String secondaryText;
+  const _Prediction({
+    required this.placeId,
+    required this.mainText,
+    required this.secondaryText,
+  });
+}
 
 class HomeScreen extends StatefulWidget {
   final ValueChanged<String>? onSelectCourt;
@@ -19,8 +60,91 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _index = 0;
+  GoogleMapController? _mapCtrl;
+  final TextEditingController _searchCtrl = TextEditingController();
+  List<_Prediction> _predictions = [];
+  bool _showSearch = false;
 
   Court get _court => kCourts[_index];
+
+  @override
+  void dispose() {
+    _mapCtrl?.dispose();
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Set<Marker> get _markers => {
+        for (var i = 0; i < kCourts.length; i++)
+          Marker(
+            markerId: MarkerId(kCourts[i].id),
+            position: LatLng(kCourts[i].lat, kCourts[i].lng),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              i == _index ? 22.0 : BitmapDescriptor.hueAzure,
+            ),
+            onTap: () => _onSelectIndex(i),
+          ),
+      };
+
+  void _onSelectIndex(int i) {
+    setState(() => _index = i);
+    _mapCtrl?.animateCamera(
+      CameraUpdate.newLatLng(LatLng(kCourts[i].lat, kCourts[i].lng)),
+    );
+  }
+
+  Future<void> _onSearch(String query) async {
+    if (query.isEmpty) {
+      setState(() => _predictions = []);
+      return;
+    }
+    try {
+      final uri = Uri.https('maps.googleapis.com', '/maps/api/place/autocomplete/json', {
+        'input': query,
+        'types': '(regions)',
+        'components': 'country:ar',
+        'language': 'es',
+        'key': _kApiKey,
+      });
+      final response = await http.get(uri);
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final raw = data['predictions'] as List<dynamic>;
+      final predictions = raw.map((p) {
+        final fmt = p['structured_formatting'] as Map<String, dynamic>;
+        return _Prediction(
+          placeId: p['place_id'] as String,
+          mainText: fmt['main_text'] as String,
+          secondaryText: (fmt['secondary_text'] ?? '') as String,
+        );
+      }).toList();
+      setState(() => _predictions = predictions);
+    } catch (_) {}
+  }
+
+  Future<void> _onSelectPrediction(_Prediction pred) async {
+    setState(() {
+      _showSearch = false;
+      _predictions = [];
+      _searchCtrl.text = pred.mainText;
+    });
+    FocusScope.of(context).unfocus();
+    try {
+      final uri = Uri.https('maps.googleapis.com', '/maps/api/place/details/json', {
+        'place_id': pred.placeId,
+        'fields': 'geometry',
+        'key': _kApiKey,
+      });
+      final response = await http.get(uri);
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final loc = (data['result'] as Map)['geometry']['location'] as Map<String, dynamic>;
+      _mapCtrl?.animateCamera(
+        CameraUpdate.newLatLngZoom(
+          LatLng((loc['lat'] as num).toDouble(), (loc['lng'] as num).toDouble()),
+          14,
+        ),
+      );
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -28,9 +152,19 @@ class _HomeScreenState extends State<HomeScreen> {
       color: AppColors.bg,
       child: Stack(
         children: [
-          _MapCanvas(
-            activeIndex: _index,
-            onPin: (i) => setState(() => _index = i),
+          GoogleMap(
+            onMapCreated: (ctrl) => _mapCtrl = ctrl,
+            style: _kMapStyle,
+            initialCameraPosition: const CameraPosition(
+              target: LatLng(-34.6037, -58.3816),
+              zoom: 12,
+            ),
+            markers: _markers,
+            zoomControlsEnabled: false,
+            myLocationButtonEnabled: false,
+            compassEnabled: false,
+            mapToolbarEnabled: false,
+            tiltGesturesEnabled: false,
           ),
           Positioned(
             top: 54,
@@ -38,12 +172,20 @@ class _HomeScreenState extends State<HomeScreen> {
             right: 16,
             child: _searchBar(),
           ),
-          Positioned(
-            top: 112,
-            left: 0,
-            right: 0,
-            child: _quickChips(),
-          ),
+          if (_showSearch && _predictions.isNotEmpty)
+            Positioned(
+              top: 112,
+              left: 16,
+              right: 16,
+              child: _predictionsOverlay(),
+            ),
+          if (!_showSearch)
+            Positioned(
+              top: 112,
+              left: 0,
+              right: 0,
+              child: _quickChips(),
+            ),
           Positioned(
             right: 16,
             bottom: 260,
@@ -65,19 +207,44 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Expanded(
           child: _glassContainer(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            height: 48,
+            padding: const EdgeInsets.symmetric(horizontal: 18),
             radius: 100,
             child: Row(
               children: [
                 Icon(Icons.search, size: 16, color: AppColors.white(0.5)),
                 const SizedBox(width: 10),
-                Text(
-                  'Buscar cancha o barrio',
-                  style: AppText.grotesk(
-                    size: 14,
-                    color: AppColors.white(0.55),
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    onTap: () => setState(() => _showSearch = true),
+                    onChanged: _onSearch,
+                    style: AppText.grotesk(size: 14),
+                    cursorColor: AppColors.accent,
+                    decoration: InputDecoration(
+                      hintText: 'Buscar barrio',
+                      hintStyle: AppText.grotesk(
+                        size: 14,
+                        color: AppColors.white(0.55),
+                      ),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
                   ),
                 ),
+                if (_showSearch)
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _showSearch = false;
+                        _predictions = [];
+                        _searchCtrl.clear();
+                      });
+                      FocusScope.of(context).unfocus();
+                    },
+                    child: Icon(Icons.close, size: 16, color: AppColors.white(0.5)),
+                  ),
               ],
             ),
           ),
@@ -98,6 +265,46 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _predictionsOverlay() {
+    return _glassContainer(
+      radius: 16,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final pred in _predictions.take(5))
+            InkWell(
+              onTap: () => _onSelectPrediction(pred),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.place_outlined, size: 16, color: AppColors.white(0.5)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(pred.mainText, style: AppText.grotesk(size: 14)),
+                          if (pred.secondaryText.isNotEmpty)
+                            Text(
+                              pred.secondaryText,
+                              style: AppText.grotesk(
+                                size: 11,
+                                color: AppColors.white(0.5),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _quickChips() {
     final chips = [
       ('Cerca', true),
@@ -112,8 +319,8 @@ class _HomeScreenState extends State<HomeScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: chips.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (_, i) => AppChip(
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
+        itemBuilder: (context, i) => AppChip(
           label: chips[i].$1,
           active: chips[i].$2,
         ),
@@ -138,10 +345,8 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _CourtSwipeCard(
             court: _court,
             onSelect: () => widget.onSelectCourt?.call(_court.id),
-            onPrev: () => setState(() =>
-                _index = (_index - 1 + kCourts.length) % kCourts.length),
-            onNext: () =>
-                setState(() => _index = (_index + 1) % kCourts.length),
+            onPrev: () => _onSelectIndex((_index - 1 + kCourts.length) % kCourts.length),
+            onNext: () => _onSelectIndex((_index + 1) % kCourts.length),
           ),
         ),
         const SizedBox(height: 10),
@@ -154,9 +359,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 width: i == _index ? 18 : 5,
                 height: 5,
                 decoration: BoxDecoration(
-                  color: i == _index
-                      ? AppColors.accent
-                      : AppColors.white(0.25),
+                  color: i == _index ? AppColors.accent : AppColors.white(0.25),
                   borderRadius: BorderRadius.circular(3),
                 ),
               ),
@@ -200,246 +403,6 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-}
-
-class _MapCanvas extends StatelessWidget {
-  final int activeIndex;
-  final ValueChanged<int> onPin;
-
-  const _MapCanvas({required this.activeIndex, required this.onPin});
-
-  static const _positions = [
-    Offset(0.45, 0.42),
-    Offset(0.70, 0.25),
-    Offset(0.25, 0.58),
-    Offset(0.82, 0.48),
-    Offset(0.55, 0.75),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0xFF0D1520), Color(0xFF0A0F14)],
-            ),
-          ),
-        ),
-        CustomPaint(painter: _MapBgPainter(), child: const SizedBox.expand()),
-        // "You are here" pulse
-        const Center(child: _PulsingDot()),
-        // Pins
-        LayoutBuilder(builder: (_, c) {
-          return Stack(
-            children: [
-              for (var i = 0; i < kCourts.length; i++)
-                Positioned(
-                  left: c.maxWidth * _positions[i].dx - 40,
-                  top: c.maxHeight * _positions[i].dy - 40,
-                  child: _Pin(
-                    court: kCourts[i],
-                    active: i == activeIndex,
-                    onTap: () => onPin(i),
-                  ),
-                ),
-            ],
-          );
-        }),
-      ],
-    );
-  }
-}
-
-class _MapBgPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final streetPaint = Paint()
-      ..color = AppColors.white(0.04)
-      ..strokeWidth = 1;
-    canvas.save();
-    canvas.translate(size.width / 2, size.height / 2);
-    canvas.rotate(0.31);
-    canvas.translate(-size.width / 2, -size.height / 2);
-    for (double x = -size.width; x < size.width * 2; x += 60) {
-      canvas.drawLine(Offset(x, -size.height), Offset(x, size.height * 2), streetPaint);
-    }
-    for (double y = -size.height; y < size.height * 2; y += 60) {
-      canvas.drawLine(Offset(-size.width, y), Offset(size.width * 2, y), streetPaint);
-    }
-    canvas.restore();
-
-    // River blob
-    final river = Paint()..color = const Color(0x1F285078);
-    final path = Path()
-      ..moveTo(-20, size.height * 0.7)
-      ..quadraticBezierTo(size.width * 0.2, size.height * 0.65, size.width * 0.5,
-          size.height * 0.75)
-      ..quadraticBezierTo(size.width * 0.8, size.height * 0.85, size.width + 20,
-          size.height * 0.78)
-      ..lineTo(size.width + 20, size.height)
-      ..lineTo(-20, size.height)
-      ..close();
-    canvas.drawPath(path, river);
-  }
-
-  @override
-  bool shouldRepaint(covariant _MapBgPainter oldDelegate) => false;
-}
-
-class _PulsingDot extends StatefulWidget {
-  const _PulsingDot();
-  @override
-  State<_PulsingDot> createState() => _PulsingDotState();
-}
-
-class _PulsingDotState extends State<_PulsingDot>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 60,
-      height: 60,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          AnimatedBuilder(
-            animation: _ctrl,
-            builder: (_, __) => Container(
-              width: 18 + _ctrl.value * 40,
-              height: 18 + _ctrl.value * 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: AppColors.accent.withAlpha(
-                      ((1 - _ctrl.value) * 100).toInt()),
-                  width: 2,
-                ),
-              ),
-            ),
-          ),
-          Container(
-            width: 18,
-            height: 18,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.accent,
-              boxShadow: [
-                BoxShadow(color: AppColors.accent, blurRadius: 20),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Pin extends StatelessWidget {
-  final Court court;
-  final bool active;
-  final VoidCallback onTap;
-
-  const _Pin({required this.court, required this.active, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedScale(
-        scale: active ? 1.15 : 1,
-        duration: const Duration(milliseconds: 250),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: active ? 10 : 8,
-                vertical: active ? 7 : 6,
-              ),
-              decoration: BoxDecoration(
-                color: active ? AppColors.accent : const Color(0xF211181F),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: active ? AppColors.accent : AppColors.white(0.2),
-                  width: 2,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: active
-                        ? AppColors.accent.withAlpha(136)
-                        : AppColors.black(0.4),
-                    blurRadius: active ? 20 : 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const BBallGlyph(size: 14),
-                  if (active) ...[
-                    const SizedBox(width: 6),
-                    Text(
-                      court.name.split(' ').first,
-                      style: AppText.grotesk(
-                        size: 11,
-                        weight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            CustomPaint(
-              size: const Size(10, 7),
-              painter: _PinTailPainter(
-                  color: active ? AppColors.accent : const Color(0xF211181F)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PinTailPainter extends CustomPainter {
-  final Color color;
-  _PinTailPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final path = Path()
-      ..moveTo(0, 0)
-      ..lineTo(size.width, 0)
-      ..lineTo(size.width / 2, size.height)
-      ..close();
-    canvas.drawPath(path, Paint()..color = color);
-  }
-
-  @override
-  bool shouldRepaint(covariant _PinTailPainter old) => old.color != color;
 }
 
 class _CourtSwipeCard extends StatelessWidget {
@@ -486,7 +449,7 @@ class _CourtSwipeCard extends StatelessWidget {
                       width: 96,
                       height: 96,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
+                      errorBuilder: (context, error, stack) => Container(
                         width: 96,
                         height: 96,
                         color: AppColors.bgElev,
