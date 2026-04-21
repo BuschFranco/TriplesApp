@@ -280,8 +280,10 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
         child: Stack(
           children: [
             GoogleMap(
-              onMapCreated: (ctrl) => _mapCtrl = ctrl,
-              style: _kMapStyle,
+              onMapCreated: (ctrl) {
+                _mapCtrl = ctrl;
+                ctrl.setMapStyle(_kMapStyle);
+              },
               initialCameraPosition: CameraPosition(target: _pinLocation, zoom: 15),
               onCameraMove: (pos) => _pinLocation = pos.target,
               zoomControlsEnabled: false,

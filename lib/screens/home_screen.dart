@@ -155,8 +155,10 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Stack(
         children: [
           GoogleMap(
-            onMapCreated: (ctrl) => _mapCtrl = ctrl,
-            style: _kMapStyle,
+            onMapCreated: (ctrl) {
+              _mapCtrl = ctrl;
+              ctrl.setMapStyle(_kMapStyle);
+            },
             initialCameraPosition: const CameraPosition(
               target: LatLng(-34.6037, -58.3816),
               zoom: 12,
