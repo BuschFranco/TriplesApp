@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import 'add_court_screen.dart';
 
 class CreateScreen extends StatelessWidget {
   const CreateScreen({super.key});
@@ -28,7 +29,13 @@ class CreateScreen extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           for (var i = 0; i < options.length; i++)
-            Container(
+            GestureDetector(
+              onTap: i == 1
+                  ? () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const AddCourtScreen()),
+                      )
+                  : null,
+              child: Container(
               margin: const EdgeInsets.only(bottom: 10),
               padding: const EdgeInsets.all(18),
               decoration: BoxDecoration(
@@ -85,6 +92,7 @@ class CreateScreen extends StatelessWidget {
                   const Icon(Icons.chevron_right, color: Colors.white, size: 20),
                 ],
               ),
+            ),
             ),
         ],
       ),

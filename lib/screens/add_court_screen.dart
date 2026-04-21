@@ -1,0 +1,533 @@
+import 'dart:ui';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../theme/app_theme.dart';
+
+const _kMapStyle = '''
+[
+  {"elementType":"geometry","stylers":[{"color":"#0d1520"}]},
+  {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#8896a7"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#0a0f14"}]},
+  {"featureType":"administrative.land_parcel","stylers":[{"visibility":"off"}]},
+  {"featureType":"administrative.locality","elementType":"labels.text.fill","stylers":[{"color":"#c0c8d8"}]},
+  {"featureType":"poi","stylers":[{"visibility":"off"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#1a2a3a"}]},
+  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#1e3040"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#1a3a52"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#0a1929"}]}
+]
+''';
+
+class AddCourtScreen extends StatefulWidget {
+  const AddCourtScreen({super.key});
+
+  @override
+  State<AddCourtScreen> createState() => _AddCourtScreenState();
+}
+
+class _AddCourtScreenState extends State<AddCourtScreen> {
+  final _nameCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+  final _hoursCtrl = TextEditingController();
+
+  String _type = 'Exterior';
+  String _surface = 'Asfalto';
+  int _hoops = 2;
+  String _vibe = 'Casual';
+  bool _free = true;
+  bool _lit = false;
+  final Set<String> _amenities = {};
+  LatLng _pinLocation = const LatLng(-34.6037, -58.3816);
+  GoogleMapController? _mapCtrl;
+  bool _locating = false;
+  bool _submitted = false;
+
+  static const _surfaces = ['Asfalto', 'Cemento', 'Parquet', 'Goma'];
+  static const _vibes = ['Casual', 'Competitivo', 'Entrenamiento', 'Callejero', 'Profesional'];
+  static const _amenityOptions = ['Vestuarios', 'Estacionamiento', 'Bebedero', 'Techada', 'Reserva', 'Torneos'];
+
+  @override
+  void initState() {
+    super.initState();
+    _tryLoadCurrentLocation();
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    _hoursCtrl.dispose();
+    _mapCtrl?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _tryLoadCurrentLocation() async {
+    try {
+      final perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) return;
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.low),
+      );
+      if (!mounted) return;
+      final loc = LatLng(pos.latitude, pos.longitude);
+      setState(() => _pinLocation = loc);
+      _mapCtrl?.animateCamera(CameraUpdate.newLatLng(loc));
+    } catch (_) {}
+  }
+
+  Future<void> _locateMe() async {
+    setState(() => _locating = true);
+    try {
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+        if (perm == LocationPermission.denied) return;
+      }
+      if (perm == LocationPermission.deniedForever) return;
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      if (!mounted) return;
+      final loc = LatLng(pos.latitude, pos.longitude);
+      setState(() => _pinLocation = loc);
+      await _mapCtrl?.animateCamera(CameraUpdate.newLatLngZoom(loc, 16));
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
+  void _submit() {
+    if (_nameCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Ponele un nombre a la cancha', style: AppText.grotesk(size: 13)),
+          backgroundColor: AppColors.bgElev,
+        ),
+      );
+      return;
+    }
+    setState(() => _submitted = true);
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('¡Cancha enviada para revisión!', style: AppText.grotesk(size: 13)),
+          backgroundColor: AppColors.accent,
+        ),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+      ),
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        body: Column(
+          children: [
+            _header(),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _sectionTitle('Nombre'),
+                    _glassField(
+                      controller: _nameCtrl,
+                      hint: 'Ej. Cancha de Palermo Chico',
+                    ),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Ubicación'),
+                    _mapPicker(),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Tipo'),
+                    _chipRow(['Exterior', 'Interior'], _type, (v) => setState(() => _type = v)),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Superficie'),
+                    _chipRow(_surfaces, _surface, (v) => setState(() => _surface = v)),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Cantidad de aros'),
+                    _hoopsStepper(),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Vibe'),
+                    _chipRow(_vibes, _vibe, (v) => setState(() => _vibe = v)),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Características'),
+                    _toggleRow(),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Comodidades'),
+                    _amenitiesGrid(),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Horarios'),
+                    _glassField(
+                      controller: _hoursCtrl,
+                      hint: 'Ej. 06:00 — 23:00 o Abierto 24h',
+                    ),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Descripción'),
+                    _glassField(
+                      controller: _descCtrl,
+                      hint: 'Contá algo sobre esta cancha...',
+                      maxLines: 4,
+                    ),
+                    const SizedBox(height: 32),
+                    _submitBtn(),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _header() {
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 8, 20, 0),
+        child: Row(
+          children: [
+            IconButton(
+              onPressed: () => Navigator.of(context).pop(),
+              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+            ),
+            Text(
+              'Agregar cancha',
+              style: AppText.archivo(size: 22, weight: FontWeight.w900),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Text(
+        text.toUpperCase(),
+        style: AppText.grotesk(
+          size: 11,
+          weight: FontWeight.w700,
+          color: AppColors.white(0.45),
+          letterSpacing: 0.08,
+        ),
+      ),
+    );
+  }
+
+  Widget _glassField({
+    required TextEditingController controller,
+    required String hint,
+    int maxLines = 1,
+  }) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xE011181F),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.white(0.1)),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: TextField(
+            controller: controller,
+            maxLines: maxLines,
+            minLines: 1,
+            style: AppText.grotesk(size: 14),
+            cursorColor: AppColors.accent,
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: AppText.grotesk(size: 14, color: AppColors.white(0.35)),
+              border: InputBorder.none,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _mapPicker() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: SizedBox(
+        height: 220,
+        child: Stack(
+          children: [
+            GoogleMap(
+              onMapCreated: (ctrl) => _mapCtrl = ctrl,
+              style: _kMapStyle,
+              initialCameraPosition: CameraPosition(target: _pinLocation, zoom: 15),
+              onCameraMove: (pos) => _pinLocation = pos.target,
+              zoomControlsEnabled: false,
+              myLocationButtonEnabled: false,
+              compassEnabled: false,
+              mapToolbarEnabled: false,
+              tiltGesturesEnabled: false,
+            ),
+            // Centered crosshair pin
+            const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.location_pin, color: AppColors.accent, size: 40),
+                  SizedBox(height: 20),
+                ],
+              ),
+            ),
+            // Locate me button
+            Positioned(
+              right: 10,
+              bottom: 10,
+              child: GestureDetector(
+                onTap: _locateMe,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: const Color(0xE011181F),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.white(0.1)),
+                      ),
+                      child: _locating
+                          ? Padding(
+                              padding: const EdgeInsets.all(9),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: AppColors.accent,
+                              ),
+                            )
+                          : Icon(Icons.my_location, color: AppColors.accent, size: 18),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _chipRow(List<String> options, String selected, ValueChanged<String> onSelect) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: options.map((opt) {
+        final active = opt == selected;
+        return GestureDetector(
+          onTap: () => onSelect(opt),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: active ? AppColors.accent : const Color(0x331A2430),
+              borderRadius: BorderRadius.circular(100),
+              border: Border.all(
+                color: active ? AppColors.accent : AppColors.white(0.1),
+              ),
+            ),
+            child: Text(
+              opt,
+              style: AppText.grotesk(
+                size: 13,
+                weight: active ? FontWeight.w700 : FontWeight.w500,
+                color: active ? Colors.white : AppColors.white(0.7),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _hoopsStepper() {
+    return Row(
+      children: [
+        _stepBtn(Icons.remove, () {
+          if (_hoops > 1) setState(() => _hoops--);
+        }),
+        const SizedBox(width: 16),
+        Text(
+          '$_hoops',
+          style: AppText.archivo(size: 24, weight: FontWeight.w900),
+        ),
+        const SizedBox(width: 16),
+        _stepBtn(Icons.add, () {
+          if (_hoops < 10) setState(() => _hoops++);
+        }),
+        const SizedBox(width: 12),
+        Text(
+          _hoops == 1 ? 'aro' : 'aros',
+          style: AppText.grotesk(size: 14, color: AppColors.white(0.5)),
+        ),
+      ],
+    );
+  }
+
+  Widget _stepBtn(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: const Color(0x331A2430),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.white(0.1)),
+        ),
+        child: Icon(icon, color: Colors.white, size: 18),
+      ),
+    );
+  }
+
+  Widget _toggleRow() {
+    return Row(
+      children: [
+        Expanded(child: _toggle('Gratis', Icons.attach_money, _free, (v) => setState(() => _free = v))),
+        const SizedBox(width: 10),
+        Expanded(child: _toggle('Iluminada', Icons.lightbulb_outline, _lit, (v) => setState(() => _lit = v))),
+      ],
+    );
+  }
+
+  Widget _toggle(String label, IconData icon, bool value, ValueChanged<bool> onChanged) {
+    return GestureDetector(
+      onTap: () => onChanged(!value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: value ? AppColors.accent.withAlpha(40) : const Color(0x331A2430),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: value ? AppColors.accent.withAlpha(120) : AppColors.white(0.1),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: value ? AppColors.accent : AppColors.white(0.5)),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: AppText.grotesk(
+                size: 13,
+                weight: FontWeight.w600,
+                color: value ? AppColors.accent : AppColors.white(0.6),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _amenitiesGrid() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: _amenityOptions.map((opt) {
+        final active = _amenities.contains(opt);
+        return GestureDetector(
+          onTap: () => setState(() {
+            if (active) {
+              _amenities.remove(opt);
+            } else {
+              _amenities.add(opt);
+            }
+          }),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: active ? AppColors.accent.withAlpha(40) : const Color(0x331A2430),
+              borderRadius: BorderRadius.circular(100),
+              border: Border.all(
+                color: active ? AppColors.accent.withAlpha(120) : AppColors.white(0.1),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (active) ...[
+                  Icon(Icons.check, size: 12, color: AppColors.accent),
+                  const SizedBox(width: 4),
+                ],
+                Text(
+                  opt,
+                  style: AppText.grotesk(
+                    size: 13,
+                    weight: active ? FontWeight.w700 : FontWeight.w500,
+                    color: active ? AppColors.accent : AppColors.white(0.7),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _submitBtn() {
+    return GestureDetector(
+      onTap: _submitted ? null : _submit,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          gradient: _submitted
+              ? null
+              : const LinearGradient(
+                  colors: [AppColors.accent, AppColors.accentDark],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+          color: _submitted ? AppColors.white(0.1) : null,
+          borderRadius: BorderRadius.circular(100),
+          boxShadow: _submitted
+              ? null
+              : [
+                  BoxShadow(
+                    color: AppColors.accent.withAlpha(80),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+        ),
+        alignment: Alignment.center,
+        child: _submitted
+            ? SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.white(0.6)),
+              )
+            : Text(
+                'PUBLICAR CANCHA',
+                style: AppText.archivo(size: 14, weight: FontWeight.w900, letterSpacing: 0.04),
+              ),
+      ),
+    );
+  }
+}
