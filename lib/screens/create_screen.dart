@@ -2,15 +2,8 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import 'add_court_screen.dart';
 
-class CreateScreen extends StatefulWidget {
+class CreateScreen extends StatelessWidget {
   const CreateScreen({super.key});
-
-  @override
-  State<CreateScreen> createState() => _CreateScreenState();
-}
-
-class _CreateScreenState extends State<CreateScreen> {
-  int? _pressed;
 
   static const _options = [
     ('Crear pickup game', 'Organizá un partido en cualquier cancha', '🏀'),
@@ -19,7 +12,7 @@ class _CreateScreenState extends State<CreateScreen> {
     ('Reservar cancha', 'Reservá un horario', '📅'),
   ];
 
-  void _onTap(int i) {
+  void _onTap(BuildContext context, int i) {
     if (i == 1) {
       Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => const AddCourtScreen()),
@@ -45,38 +38,14 @@ class _CreateScreenState extends State<CreateScreen> {
           const SizedBox(height: 20),
           for (var i = 0; i < _options.length; i++)
             GestureDetector(
-              onTapDown: (_) => setState(() => _pressed = i),
-              onTapUp: (_) {
-                setState(() => _pressed = null);
-                _onTap(i);
-              },
-              onTapCancel: () => setState(() => _pressed = null),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
+              onTap: () => _onTap(context, i),
+              child: Container(
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
-                  gradient: _pressed == i
-                      ? const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [AppColors.accent, AppColors.accentDark],
-                        )
-                      : null,
-                  color: _pressed == i ? null : const Color(0x991A2430),
-                  border: _pressed == i
-                      ? null
-                      : Border.all(color: AppColors.white(0.06)),
+                  color: const Color(0x991A2430),
+                  border: Border.all(color: AppColors.white(0.06)),
                   borderRadius: BorderRadius.circular(18),
-                  boxShadow: _pressed == i
-                      ? [
-                          BoxShadow(
-                            color: AppColors.accent.withAlpha(68),
-                            blurRadius: 40,
-                            offset: const Offset(0, 16),
-                          ),
-                        ]
-                      : null,
                 ),
                 child: Row(
                   children: [
@@ -88,20 +57,12 @@ class _CreateScreenState extends State<CreateScreen> {
                         children: [
                           Text(
                             _options[i].$1,
-                            style: AppText.archivo(
-                              size: 16,
-                              weight: FontWeight.w800,
-                            ),
+                            style: AppText.archivo(size: 16, weight: FontWeight.w800),
                           ),
                           const SizedBox(height: 2),
                           Text(
                             _options[i].$2,
-                            style: AppText.grotesk(
-                              size: 12,
-                              color: _pressed == i
-                                  ? AppColors.white(0.8)
-                                  : AppColors.white(0.55),
-                            ),
+                            style: AppText.grotesk(size: 12, color: AppColors.white(0.55)),
                           ),
                         ],
                       ),
