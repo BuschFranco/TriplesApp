@@ -1,32 +1,31 @@
-# 🏀 TriplesApp
+# TriplesApp
 
-**Encontrá tu próxima cancha de básquet.** App mobile (Flutter) para descubrir
-canchas en un mapa, ver detalles, dejar reseñas, organizar pickups y conectar
-con otros jugadores.
+App mobile (Flutter) para descubrir canchas de básquet en un mapa, ver
+detalles, dejar reseñas, organizar pickups y conectar con otros jugadores.
 
 > Estado: prototipo funcional con backend de datos sobre **Notion**.
 
 ---
 
-## ✨ Funcionalidades
+## Funcionalidades
 
-- 🗺️ **Mapa de canchas** con marcadores, búsqueda de barrios (Google Places) y
+- **Mapa de canchas** con marcadores, búsqueda de barrios (Google Places) y
   tarjeta deslizable por cancha.
-- 📋 **Listado** de canchas con orden por cercanía, rating o actividad.
-- 🔎 **Detalle de cancha**: fotos, amenities, horarios, reseñas y "jugando ahora".
-- ➕ **Agregar cancha** (con ubicación en mapa e imagen por URL) → entra a
+- **Listado** de canchas con orden por cercanía, rating o actividad.
+- **Detalle de cancha**: fotos, amenities, horarios, reseñas y "jugando ahora".
+- **Agregar cancha** (con ubicación en mapa e imagen por URL) → entra a
   **moderación** (estados: Sin definir / Aprobado / Desaprobado). Solo las
   aprobadas se muestran.
-- ⭐ **Reseñas** por cancha (rating + comentario).
-- 📅 **Pickups**: organizar partidos (cancha, fecha, jugadores, notas).
-- ❤️ **Favoritos** (guardados localmente en el dispositivo).
-- 👤 **Perfil** con datos del usuario + pestaña **Amigos** (buscar por handle y
+- **Reseñas** por cancha (rating + comentario).
+- **Pickups**: organizar partidos (cancha, fecha, jugadores, notas).
+- **Favoritos** (guardados localmente en el dispositivo).
+- **Perfil** con datos del usuario + pestaña **Amigos** (buscar por handle y
   agregar sin necesidad de aceptación).
-- 🔐 **Login / registro** en la primera pantalla, con sesión persistente.
+- **Login / registro** en la primera pantalla, con sesión persistente.
 
 ---
 
-## 🧱 Stack y arquitectura
+## Stack y arquitectura
 
 - **Flutter** (Dart) — Android (mobile). iOS preparado pero no compilado.
 - **Estado**: `provider` (`Session`, `CourtsProvider`, `FavoritesProvider`).
@@ -74,19 +73,19 @@ lib/
 
 ---
 
-## 🚀 Cómo correrlo
+## Cómo correrlo
 
 ### Requisitos
 - Flutter SDK
 - Android SDK + un dispositivo Android (físico o emulador)
 - Una API key de **Google Maps** y un **token de integración de Notion**
 
-> ⚠️ Usar una ruta **sin acentos ni espacios** (ej. `F:\dev\TriplesApp`). Las
-> herramientas nativas de Android en Windows fallan con caracteres no-ASCII.
+> Importante: usar una ruta **sin acentos ni espacios** (ej. `F:\dev\TriplesApp`).
+> Las herramientas nativas de Android en Windows fallan con caracteres no-ASCII.
 
 ### 1. Configurar secretos
 
-Creá `dart_defines.json` en la raíz (está en `.gitignore`):
+Crear `dart_defines.json` en la raíz (está en `.gitignore`):
 
 ```json
 {
@@ -99,8 +98,8 @@ Los IDs de las databases de Notion tienen default en
 [`lib/notion/notion_config.dart`](lib/notion/notion_config.dart) y se pueden
 sobreescribir por `--dart-define` si hace falta.
 
-> Para Notion: creá una *internal integration* en
-> https://www.notion.so/my-integrations y compartí la página que contiene las
+> Para Notion: crear una *internal integration* en
+> https://www.notion.so/my-integrations y compartir la página que contiene las
 > databases con esa integración.
 
 ### 2. Instalar dependencias y correr
@@ -112,7 +111,7 @@ flutter run --dart-define-from-file=dart_defines.json
 
 ---
 
-## 🛡️ Notas de seguridad
+## Notas de seguridad
 
 - `dart_defines.json`, `.env` y `ios/Flutter/APIKeys.xcconfig` están en
   `.gitignore` — **nunca** se versionan.
@@ -121,7 +120,7 @@ flutter run --dart-define-from-file=dart_defines.json
 
 ---
 
-## 🚧 En construcción
+## En construcción
 
 Secciones maquetadas pero todavía sin backend: **Check-in**, **Reservar cancha**
 y el **chat de Crew** (aparecen marcadas dentro de la app).
