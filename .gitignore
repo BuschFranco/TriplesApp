@@ -1,6 +1,8 @@
 # Local secrets (never commit)
 dart_defines.json
 lib/config.dart
+.env
+ios/Flutter/APIKeys.xcconfig
 
 # Miscellaneous
 *.class

@@ -1,4 +1,26 @@
+import '../services/notion_service.dart';
+
 enum CourtStatus { open, busy, closed }
+
+CourtStatus _statusFromString(String s) => switch (s) {
+      'busy' => CourtStatus.busy,
+      'closed' => CourtStatus.closed,
+      _ => CourtStatus.open,
+    };
+
+/// Estados de moderación de una cancha (select "Aprobacion" en Notion).
+class CourtApproval {
+  static const pending = 'Sin definir';
+  static const approved = 'Aprobado';
+  static const rejected = 'Desaprobado';
+}
+
+/// Badges que existen como opciones en la base Canchas de Notion.
+/// Al escribir filtramos a este set para no romper el multi_select.
+const Set<String> kAllowedBadges = {
+  'Iluminada', 'Gratis', 'Popular', 'Techada', 'Reserva', 'Torneos',
+  'Vestuarios', 'Estacionamiento', 'Bebedero',
+};
 
 class Court {
   final String id;
@@ -44,6 +66,73 @@ class Court {
     required this.lat,
     required this.lng,
   });
+
+  String get statusName => switch (status) {
+        CourtStatus.busy => 'busy',
+        CourtStatus.closed => 'closed',
+        CourtStatus.open => 'open',
+      };
+
+  /// Construye una Court a partir de una página de la base Canchas de Notion.
+  /// El `id` es el page id de Notion (estable y único).
+  factory Court.fromNotion(Map<String, dynamic> page) {
+    final p = page['properties'] as Map<String, dynamic>;
+    return Court(
+      id: page['id']?.toString() ?? '',
+      name: NotionService.readTitle(p, 'Name'),
+      area: NotionService.readText(p, 'Area'),
+      dist: NotionService.readText(p, 'Dist'),
+      img: NotionService.readUrl(p, 'Img'),
+      rating: NotionService.readNumber(p, 'Rating'),
+      reviews: NotionService.readInt(p, 'Reviews'),
+      type: NotionService.readSelect(p, 'Type', fallback: 'Exterior'),
+      free: NotionService.readCheckbox(p, 'Free'),
+      lit: NotionService.readCheckbox(p, 'Lit'),
+      hoops: NotionService.readInt(p, 'Hoops', fallback: 1),
+      surface: NotionService.readSelect(p, 'Surface', fallback: 'Asfalto'),
+      status: _statusFromString(NotionService.readSelect(p, 'Status', fallback: 'open')),
+      players: NotionService.readInt(p, 'Players'),
+      vibe: NotionService.readSelect(p, 'Vibe', fallback: 'Casual'),
+      hours: NotionService.readText(p, 'Hours'),
+      badges: NotionService.readMultiSelect(p, 'Badges'),
+      desc: NotionService.readText(p, 'Desc'),
+      lat: NotionService.readNumber(p, 'Lat'),
+      lng: NotionService.readNumber(p, 'Lng'),
+    );
+  }
+
+  /// Serializa a propiedades de Notion para crear/actualizar la cancha.
+  /// Por defecto entra como "Sin definir" (pendiente de moderación).
+  Map<String, dynamic> toNotionProperties({
+    String? createdBy,
+    String approval = CourtApproval.pending,
+  }) {
+    return {
+      'Name': NotionService.title(name),
+      'Area': NotionService.richText(area),
+      'Dist': NotionService.richText(dist),
+      'Img': NotionService.url(img),
+      'Rating': NotionService.number(rating),
+      'Reviews': NotionService.number(reviews),
+      'Type': NotionService.select(type),
+      'Free': NotionService.checkbox(free),
+      'Lit': NotionService.checkbox(lit),
+      'Hoops': NotionService.number(hoops),
+      'Surface': NotionService.select(surface),
+      'Status': NotionService.select(statusName),
+      'Players': NotionService.number(players),
+      'Vibe': NotionService.select(vibe),
+      'Hours': NotionService.richText(hours),
+      'Badges': NotionService.multiSelect(
+        badges.where(kAllowedBadges.contains).toList(),
+      ),
+      'Desc': NotionService.richText(desc),
+      'Lat': NotionService.number(lat),
+      'Lng': NotionService.number(lng),
+      if (createdBy != null) 'CreatedBy': NotionService.richText(createdBy),
+      'Aprobacion': NotionService.select(approval),
+    };
+  }
 }
 
 const List<Court> kCourts = [

@@ -1,8 +1,14 @@
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:provider/provider.dart';
+import '../data/courts.dart';
+import '../services/courts_provider.dart';
+import '../services/session.dart';
 import '../theme/app_theme.dart';
 
 const _kMapStyle = '''
@@ -33,6 +39,7 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
   final _nameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _hoursCtrl = TextEditingController();
+  final _imgCtrl = TextEditingController();
 
   String _type = 'Exterior';
   String _surface = 'Asfalto';
@@ -64,6 +71,7 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _hoursCtrl.dispose();
+    _imgCtrl.dispose();
     _priceCtrl.dispose();
     _mapCtrl?.dispose();
     super.dispose();
@@ -104,7 +112,15 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
     }
   }
 
-  void _submit() {
+  List<String> _buildBadges() {
+    return [
+      if (_free) 'Gratis',
+      if (_lit) 'Iluminada',
+      ..._amenities.where(kAllowedBadges.contains),
+    ];
+  }
+
+  Future<void> _submit() async {
     if (_nameCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -115,16 +131,55 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
       return;
     }
     setState(() => _submitted = true);
-    Future.delayed(const Duration(milliseconds: 1500), () {
+
+    final court = Court(
+      id: '',
+      name: _nameCtrl.text.trim(),
+      area: '',
+      dist: '',
+      img: _imgCtrl.text.trim(),
+      rating: 0,
+      reviews: 0,
+      type: _type,
+      free: _free,
+      lit: _lit,
+      hoops: _hoops,
+      surface: _surface,
+      status: CourtStatus.open,
+      players: 0,
+      vibe: _vibe,
+      hours: _hoursCtrl.text.trim(),
+      badges: _buildBadges(),
+      desc: _descCtrl.text.trim(),
+      lat: _pinLocation.latitude,
+      lng: _pinLocation.longitude,
+    );
+
+    final courtsProvider = context.read<CourtsProvider>();
+    final email = context.read<Session>().email;
+
+    try {
+      await courtsProvider.addCourt(court, createdBy: email);
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('¡Cancha enviada para revisión!', style: AppText.grotesk(size: 13)),
+          content: Text('¡Cancha enviada para revisión! 🏀',
+              style: AppText.grotesk(size: 13)),
           backgroundColor: AppColors.accent,
         ),
       );
-    });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _submitted = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No se pudo publicar. Revisá la conexión con Notion.',
+              style: AppText.grotesk(size: 13)),
+          backgroundColor: AppColors.bgElev,
+        ),
+      );
+    }
   }
 
   @override
@@ -141,7 +196,8 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
             _header(),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+                padding: EdgeInsets.fromLTRB(
+                    20, 8, 20, 40 + MediaQuery.of(context).padding.bottom),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -150,6 +206,9 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
                       controller: _nameCtrl,
                       hint: 'Ej. Cancha de Palermo Chico',
                     ),
+                    const SizedBox(height: 24),
+                    _sectionTitle('Foto'),
+                    _imgField(),
                     const SizedBox(height: 24),
                     _sectionTitle('Ubicación'),
                     _mapPicker(),
@@ -281,10 +340,7 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
         children: [
           GoogleMap(
             style: _kMapStyle,
-            onMapCreated: (ctrl) {
-              _mapCtrl = ctrl;
-              ctrl.setMapStyle(_kMapStyle);
-            },
+            onMapCreated: (ctrl) => _mapCtrl = ctrl,
             initialCameraPosition: CameraPosition(target: _pinLocation, zoom: 15),
             onCameraMove: (pos) => _pinLocation = pos.target,
             zoomControlsEnabled: false,
@@ -292,6 +348,13 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
             compassEnabled: false,
             mapToolbarEnabled: false,
             tiltGesturesEnabled: false,
+            // Let the map claim pan/zoom gestures so the surrounding
+            // SingleChildScrollView doesn't swallow them.
+            gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+              Factory<OneSequenceGestureRecognizer>(
+                () => EagerGestureRecognizer(),
+              ),
+            },
           ),
           // Centered crosshair pin
           const Center(
@@ -336,6 +399,89 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
               child: CustomPaint(painter: _MapCornerPainter(AppColors.bg)),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _imgField() {
+    final url = _imgCtrl.text.trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xE011181F),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.white(0.1)),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Icon(Icons.link, size: 16, color: AppColors.white(0.4)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _imgCtrl,
+                      keyboardType: TextInputType.url,
+                      onChanged: (_) => setState(() {}),
+                      style: AppText.grotesk(size: 14),
+                      cursorColor: AppColors.accent,
+                      decoration: InputDecoration(
+                        hintText: 'Pegá el link de una imagen (https://...)',
+                        hintStyle: AppText.grotesk(size: 13.5, color: AppColors.white(0.35)),
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
+                  ),
+                  if (url.isNotEmpty)
+                    GestureDetector(
+                      onTap: () => setState(() => _imgCtrl.clear()),
+                      child: Icon(Icons.close, size: 16, color: AppColors.white(0.5)),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: SizedBox(
+            height: 160,
+            width: double.infinity,
+            child: url.isEmpty
+                ? _imgPlaceholder('La vista previa aparece acá')
+                : Image.network(
+                    url,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (context, child, progress) =>
+                        progress == null ? child : _imgPlaceholder('Cargando...'),
+                    errorBuilder: (_, __, ___) =>
+                        _imgPlaceholder('No se pudo cargar esa imagen'),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _imgPlaceholder(String text) {
+    return Container(
+      color: const Color(0x331A2430),
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.image_outlined, size: 28, color: AppColors.white(0.3)),
+          const SizedBox(height: 8),
+          Text(text, style: AppText.grotesk(size: 12, color: AppColors.white(0.4))),
         ],
       ),
     );

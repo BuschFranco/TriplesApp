@@ -5,7 +5,8 @@ import '../widgets/bball_glyph.dart';
 
 class OnboardingScreen extends StatelessWidget {
   final VoidCallback? onStart;
-  const OnboardingScreen({super.key, this.onStart});
+  final VoidCallback? onLogin;
+  const OnboardingScreen({super.key, this.onStart, this.onLogin});
 
   @override
   Widget build(BuildContext context) {
@@ -61,7 +62,7 @@ class OnboardingScreen extends StatelessWidget {
                 const SizedBox(height: 20),
                 _stats(),
                 const SizedBox(height: 24),
-                _cta(onStart),
+                _cta(onStart, onLogin),
                 const SizedBox(height: 28),
               ],
             ),
@@ -233,7 +234,7 @@ class OnboardingScreen extends StatelessWidget {
     );
   }
 
-  Widget _cta(VoidCallback? onStart) {
+  Widget _cta(VoidCallback? onStart, VoidCallback? onLogin) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
@@ -270,22 +271,26 @@ class OnboardingScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-          RichText(
-            text: TextSpan(
-              style: AppText.grotesk(
-                size: 12,
-                color: AppColors.white(0.5),
-              ),
-              children: [
-                const TextSpan(text: '¿Ya tenés cuenta? '),
-                TextSpan(
-                  text: 'Ingresar',
-                  style: AppText.grotesk(
-                    size: 12,
-                    weight: FontWeight.w600,
-                  ),
+          GestureDetector(
+            onTap: onLogin,
+            child: RichText(
+              text: TextSpan(
+                style: AppText.grotesk(
+                  size: 12,
+                  color: AppColors.white(0.5),
                 ),
-              ],
+                children: [
+                  const TextSpan(text: '¿Ya tenés cuenta? '),
+                  TextSpan(
+                    text: 'Ingresar',
+                    style: AppText.grotesk(
+                      size: 12,
+                      weight: FontWeight.w600,
+                      color: AppColors.accent,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],

@@ -4,8 +4,9 @@ import '../theme/app_theme.dart';
 class SectionTitle extends StatelessWidget {
   final String title;
   final String? right;
+  final VoidCallback? onRight;
 
-  const SectionTitle({super.key, required this.title, this.right});
+  const SectionTitle({super.key, required this.title, this.right, this.onRight});
 
   @override
   Widget build(BuildContext context) {
@@ -24,13 +25,16 @@ class SectionTitle extends StatelessWidget {
             ),
           ),
           if (right != null)
-            Text(
-              right!,
-              style: AppText.grotesk(
-                size: 11,
-                weight: FontWeight.w600,
-                color: AppColors.accent,
-                letterSpacing: 0.04,
+            GestureDetector(
+              onTap: onRight,
+              child: Text(
+                right!,
+                style: AppText.grotesk(
+                  size: 11,
+                  weight: FontWeight.w600,
+                  color: AppColors.accent,
+                  letterSpacing: 0.04,
+                ),
               ),
             ),
         ],

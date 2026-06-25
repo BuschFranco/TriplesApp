@@ -6,8 +6,9 @@ import '../widgets/rating_badge.dart';
 import '../widgets/status_dot.dart';
 
 class ListScreen extends StatefulWidget {
+  final List<Court> courts;
   final ValueChanged<String>? onSelectCourt;
-  const ListScreen({super.key, this.onSelectCourt});
+  const ListScreen({super.key, required this.courts, this.onSelectCourt});
 
   @override
   State<ListScreen> createState() => _ListScreenState();
@@ -15,6 +16,24 @@ class ListScreen extends StatefulWidget {
 
 class _ListScreenState extends State<ListScreen> {
   String _sort = 'near';
+
+  double _distKm(Court c) =>
+      double.tryParse(c.dist.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 1e9;
+
+  List<Court> get _sortedCourts {
+    final list = [...widget.courts];
+    switch (_sort) {
+      case 'rate':
+        list.sort((a, b) => b.rating.compareTo(a.rating));
+      case 'busy':
+        list.sort((a, b) => b.players.compareTo(a.players));
+      case 'near':
+        list.sort((a, b) => _distKm(a).compareTo(_distKm(b)));
+      case 'new':
+        break; // orden original (más nuevas primero según Notion)
+    }
+    return list;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -74,13 +93,13 @@ class _ListScreenState extends State<ListScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          for (var i = 0; i < kCourts.length; i++)
+          for (var i = 0; i < _sortedCourts.length; i++)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
               child: _CourtListItem(
-                court: kCourts[i],
+                court: _sortedCourts[i],
                 rank: i + 1,
-                onTap: () => widget.onSelectCourt?.call(kCourts[i].id),
+                onTap: () => widget.onSelectCourt?.call(_sortedCourts[i].id),
               ),
             ),
         ],

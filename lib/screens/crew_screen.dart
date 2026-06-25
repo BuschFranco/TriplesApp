@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../widgets/bball_glyph.dart';
+import '../widgets/under_construction.dart';
 
 class CrewScreen extends StatelessWidget {
   const CrewScreen({super.key});
@@ -18,15 +19,24 @@ class CrewScreen extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 56, 20, 160),
         children: [
-          Text(
-            'Crew',
-            style: AppText.archivo(
-              size: 34,
-              weight: FontWeight.w900,
-              letterSpacing: -0.03,
-            ),
+          Row(
+            children: [
+              Text(
+                'Crew',
+                style: AppText.archivo(
+                  size: 34,
+                  weight: FontWeight.w900,
+                  letterSpacing: -0.03,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const UnderConstructionBadge(),
+            ],
           ),
           const SizedBox(height: 16),
+          const UnderConstructionBanner(
+            text: 'El chat con tu crew todavía no está conectado. Los mensajes de abajo son de ejemplo.',
+          ),
           Text(
             '3 CHATS ACTIVOS',
             style: AppText.grotesk(

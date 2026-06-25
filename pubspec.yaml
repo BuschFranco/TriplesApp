@@ -14,10 +14,13 @@ dependencies:
   cupertino_icons: ^1.0.8
   google_fonts: ^6.2.1
   google_maps_flutter: ^2.10.0
-  google_maps_flutter_android: any
+  google_maps_flutter_android: 2.19.7  # 2.19.8 migró a Kotlin Pigeon y rompe el build (cannot find symbol PlatformPolygon)
   google_maps_flutter_platform_interface: any
   http: ^1.2.0
   geolocator: ^13.0.0
+  shared_preferences: ^2.3.0
+  crypto: ^3.0.3
+  provider: ^6.1.2
 
 dev_dependencies:
   flutter_test:

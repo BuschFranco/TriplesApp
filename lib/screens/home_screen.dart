@@ -50,10 +50,20 @@ class _Prediction {
 }
 
 class HomeScreen extends StatefulWidget {
+  final List<Court> courts;
+  final String? focusCourtId;
+  final VoidCallback? onFocusConsumed;
   final ValueChanged<String>? onSelectCourt;
   final VoidCallback? onOpenFilters;
 
-  const HomeScreen({super.key, this.onSelectCourt, this.onOpenFilters});
+  const HomeScreen({
+    super.key,
+    required this.courts,
+    this.focusCourtId,
+    this.onFocusConsumed,
+    this.onSelectCourt,
+    this.onOpenFilters,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -67,7 +77,66 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showSearch = false;
   bool _locating = false;
 
-  Court get _court => kCourts[_index];
+  Court get _court =>
+      widget.courts[_index.clamp(0, widget.courts.length - 1)];
+
+  // Markers cacheados: solo se recalculan cuando cambian las canchas o el
+  // índice seleccionado, no en cada setState (buscar, spinner, etc.).
+  Set<Marker> _markers = {};
+
+  @override
+  void initState() {
+    super.initState();
+    // Si venimos desde el detalle con una cancha en foco, seleccionarla.
+    final fid = widget.focusCourtId;
+    if (fid != null) {
+      final idx = widget.courts.indexWhere((c) => c.id == fid);
+      if (idx >= 0) _index = idx;
+    }
+    _rebuildMarkers();
+  }
+
+  @override
+  void didUpdateWidget(HomeScreen old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.courts, widget.courts) ||
+        old.courts.length != widget.courts.length) {
+      _rebuildMarkers();
+    }
+    final fid = widget.focusCourtId;
+    if (fid != null && fid != old.focusCourtId) {
+      _focusOnCourt(fid);
+    }
+  }
+
+  void _rebuildMarkers() {
+    _markers = {
+      for (var i = 0; i < widget.courts.length; i++)
+        Marker(
+          markerId: MarkerId(widget.courts[i].id),
+          position: LatLng(widget.courts[i].lat, widget.courts[i].lng),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            i == _index ? 22.0 : BitmapDescriptor.hueAzure,
+          ),
+          onTap: () => _onSelectIndex(i),
+        ),
+    };
+  }
+
+  void _focusOnCourt(String courtId) {
+    final idx = widget.courts.indexWhere((c) => c.id == courtId);
+    if (idx >= 0) {
+      setState(() {
+        _index = idx;
+        _rebuildMarkers();
+      });
+      final c = widget.courts[idx];
+      _mapCtrl?.animateCamera(
+        CameraUpdate.newLatLngZoom(LatLng(c.lat, c.lng), 16),
+      );
+    }
+    widget.onFocusConsumed?.call();
+  }
 
   @override
   void dispose() {
@@ -76,22 +145,13 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Set<Marker> get _markers => {
-        for (var i = 0; i < kCourts.length; i++)
-          Marker(
-            markerId: MarkerId(kCourts[i].id),
-            position: LatLng(kCourts[i].lat, kCourts[i].lng),
-            icon: BitmapDescriptor.defaultMarkerWithHue(
-              i == _index ? 22.0 : BitmapDescriptor.hueAzure,
-            ),
-            onTap: () => _onSelectIndex(i),
-          ),
-      };
-
   void _onSelectIndex(int i) {
-    setState(() => _index = i);
+    setState(() {
+      _index = i;
+      _rebuildMarkers();
+    });
     _mapCtrl?.animateCamera(
-      CameraUpdate.newLatLng(LatLng(kCourts[i].lat, kCourts[i].lng)),
+      CameraUpdate.newLatLng(LatLng(widget.courts[i].lat, widget.courts[i].lng)),
     );
   }
 
@@ -158,6 +218,13 @@ class _HomeScreenState extends State<HomeScreen> {
             onMapCreated: (ctrl) {
               _mapCtrl = ctrl;
               ctrl.setMapStyle(_kMapStyle);
+              if (widget.focusCourtId != null && widget.courts.isNotEmpty) {
+                final c = _court;
+                ctrl.animateCamera(
+                  CameraUpdate.newLatLngZoom(LatLng(c.lat, c.lng), 16),
+                );
+                widget.onFocusConsumed?.call();
+              }
             },
             initialCameraPosition: const CameraPosition(
               target: LatLng(-34.6037, -58.3816),
@@ -392,15 +459,15 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _CourtSwipeCard(
             court: _court,
             onSelect: () => widget.onSelectCourt?.call(_court.id),
-            onPrev: () => _onSelectIndex((_index - 1 + kCourts.length) % kCourts.length),
-            onNext: () => _onSelectIndex((_index + 1) % kCourts.length),
+            onPrev: () => _onSelectIndex((_index - 1 + widget.courts.length) % widget.courts.length),
+            onNext: () => _onSelectIndex((_index + 1) % widget.courts.length),
           ),
         ),
         const SizedBox(height: 10),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            for (var i = 0; i < kCourts.length; i++) ...[
+            for (var i = 0; i < widget.courts.length; i++) ...[
               AnimatedContainer(
                 duration: const Duration(milliseconds: 300),
                 width: i == _index ? 18 : 5,
@@ -410,7 +477,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(3),
                 ),
               ),
-              if (i < kCourts.length - 1) const SizedBox(width: 5),
+              if (i < widget.courts.length - 1) const SizedBox(width: 5),
             ],
           ],
         ),

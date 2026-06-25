@@ -1,6 +1,12 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../data/courts.dart';
+import '../data/models.dart';
+import '../notion/notion_config.dart';
+import '../services/favorites_provider.dart';
+import '../services/notion_service.dart';
+import '../services/session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_chip.dart';
 import '../widgets/section_title.dart';
@@ -8,14 +14,23 @@ import '../widgets/status_dot.dart';
 
 class DetailScreen extends StatelessWidget {
   final String courtId;
+  final List<Court> courts;
   final VoidCallback? onBack;
+  final ValueChanged<String>? onShowOnMap;
 
-  const DetailScreen({super.key, required this.courtId, this.onBack});
+  const DetailScreen({
+    super.key,
+    required this.courtId,
+    required this.courts,
+    this.onBack,
+    this.onShowOnMap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final court = kCourts.firstWhere((c) => c.id == courtId,
-        orElse: () => kCourts.first);
+    final pool = courts.isNotEmpty ? courts : kCourts;
+    final court = pool.firstWhere((c) => c.id == courtId,
+        orElse: () => pool.first);
 
     return Container(
       color: AppColors.bg,
@@ -54,6 +69,8 @@ class DetailScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 24),
+                    _ReviewsSection(courtId: court.id),
+                    const SizedBox(height: 24),
                     const SectionTitle(
                         title: 'Actividad semanal', right: 'Hoy'),
                     _activityChart(),
@@ -76,7 +93,15 @@ class DetailScreen extends StatelessWidget {
             right: 16,
             child: Row(
               children: [
-                _iconBtn(Icons.favorite_border),
+                Builder(builder: (context) {
+                  final fav = context.watch<FavoritesProvider>();
+                  final isFav = fav.isFavorite(court.id);
+                  return _iconBtn(
+                    isFav ? Icons.favorite : Icons.favorite_border,
+                    color: isFav ? AppColors.accent : Colors.white,
+                    onTap: () => context.read<FavoritesProvider>().toggle(court.id),
+                  );
+                }),
                 const SizedBox(width: 8),
                 _iconBtn(Icons.ios_share),
               ],
@@ -86,7 +111,7 @@ class DetailScreen extends StatelessWidget {
             bottom: 110,
             left: 16,
             right: 16,
-            child: _bottomCta(),
+            child: _bottomCta(court),
           ),
         ],
       ),
@@ -377,7 +402,7 @@ class DetailScreen extends StatelessWidget {
     );
   }
 
-  Widget _iconBtn(IconData icon, {VoidCallback? onTap}) {
+  Widget _iconBtn(IconData icon, {VoidCallback? onTap, Color color = Colors.white}) {
     return GestureDetector(
       onTap: onTap,
       child: ClipRRect(
@@ -392,14 +417,14 @@ class DetailScreen extends StatelessWidget {
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: AppColors.white(0.1)),
             ),
-            child: Icon(icon, color: Colors.white, size: 18),
+            child: Icon(icon, color: color, size: 18),
           ),
         ),
       ),
     );
   }
 
-  Widget _bottomCta() {
+  Widget _bottomCta(Court court) {
     return Row(
       children: [
         Expanded(
@@ -426,18 +451,230 @@ class DetailScreen extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        Container(
-          width: 54,
-          height: 54,
-          decoration: BoxDecoration(
-            color: AppColors.white(0.08),
-            border: Border.all(color: AppColors.white(0.12)),
-            borderRadius: BorderRadius.circular(16),
+        GestureDetector(
+          onTap: () => onShowOnMap?.call(court.id),
+          child: Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              color: AppColors.white(0.08),
+              border: Border.all(color: AppColors.white(0.12)),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Icon(Icons.location_on_outlined,
+                color: Colors.white, size: 20),
           ),
-          child: const Icon(Icons.location_on_outlined,
-              color: Colors.white, size: 20),
         ),
       ],
+    );
+  }
+}
+
+/// Sección de reseñas: lista las reseñas de la cancha desde Notion y permite
+/// agregar una nueva (rating + comentario).
+class _ReviewsSection extends StatefulWidget {
+  final String courtId;
+  const _ReviewsSection({required this.courtId});
+
+  @override
+  State<_ReviewsSection> createState() => _ReviewsSectionState();
+}
+
+class _ReviewsSectionState extends State<_ReviewsSection> {
+  final _notion = NotionService();
+  late Future<List<Review>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _fetch();
+  }
+
+  Future<List<Review>> _fetch() async {
+    if (!_notion.isConfigured) return [];
+    try {
+      final rows = await _notion.queryDatabase(
+        NotionConfig.dbReviews,
+        filter: NotionService.filterText('CourtId', widget.courtId),
+      );
+      return rows.map(Review.fromNotion).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  void _refresh() => setState(() => _future = _fetch());
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionTitle(
+          title: 'Reseñas',
+          right: 'Escribir',
+          onRight: () => _openReviewDialog(context),
+        ),
+        FutureBuilder<List<Review>>(
+          future: _future,
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.white(0.4)),
+                  ),
+                ),
+              );
+            }
+            final reviews = snap.data ?? [];
+            if (reviews.isEmpty) {
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                decoration: BoxDecoration(
+                  color: const Color(0x801A2430),
+                  border: Border.all(color: AppColors.white(0.06)),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  'Todavía no hay reseñas. ¡Sé el primero!',
+                  style: AppText.grotesk(size: 13, color: AppColors.white(0.5)),
+                ),
+              );
+            }
+            return Column(
+              children: [for (final r in reviews) _reviewCard(r)],
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _reviewCard(Review r) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0x801A2430),
+        border: Border.all(color: AppColors.white(0.06)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              for (var i = 0; i < 5; i++)
+                Icon(
+                  i < r.rating.round() ? Icons.star_rounded : Icons.star_outline_rounded,
+                  size: 16,
+                  color: AppColors.accent,
+                ),
+              const Spacer(),
+              Text(
+                r.userEmail.split('@').first,
+                style: AppText.grotesk(size: 11, color: AppColors.white(0.45)),
+              ),
+            ],
+          ),
+          if (r.comment.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(r.comment, style: AppText.grotesk(size: 13, color: AppColors.white(0.8), height: 1.4)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openReviewDialog(BuildContext context) async {
+    final session = context.read<Session>();
+    if (session.email == null) return;
+    int rating = 5;
+    final commentCtrl = TextEditingController();
+    bool saving = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          backgroundColor: AppColors.bgElev,
+          title: Text('Tu reseña', style: AppText.archivo(size: 18, weight: FontWeight.w800)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  for (var i = 1; i <= 5; i++)
+                    GestureDetector(
+                      onTap: () => setLocal(() => rating = i),
+                      child: Icon(
+                        i <= rating ? Icons.star_rounded : Icons.star_outline_rounded,
+                        color: AppColors.accent,
+                        size: 30,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: commentCtrl,
+                maxLines: 3,
+                style: AppText.grotesk(size: 14),
+                cursorColor: AppColors.accent,
+                decoration: InputDecoration(
+                  hintText: 'Contá tu experiencia...',
+                  hintStyle: AppText.grotesk(size: 13, color: AppColors.white(0.35)),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: AppColors.white(0.1)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppColors.accent),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: saving ? null : () => Navigator.pop(ctx),
+              child: Text('Cancelar', style: AppText.grotesk(size: 13, color: AppColors.white(0.6))),
+            ),
+            TextButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      setLocal(() => saving = true);
+                      try {
+                        await _notion.createPage(
+                          NotionConfig.dbReviews,
+                          Review(
+                            courtId: widget.courtId,
+                            userEmail: session.email!,
+                            rating: rating.toDouble(),
+                            comment: commentCtrl.text.trim(),
+                            createdAt: DateTime.now().toIso8601String(),
+                          ).toNotionProperties(),
+                        );
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        _refresh();
+                      } catch (_) {
+                        setLocal(() => saving = false);
+                      }
+                    },
+              child: Text('Publicar',
+                  style: AppText.grotesk(size: 13, weight: FontWeight.w700, color: AppColors.accent)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
