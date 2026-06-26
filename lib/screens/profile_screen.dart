@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../data/models.dart';
 import '../services/friends_service.dart';
@@ -153,12 +154,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       style: AppText.archivo(size: 24, weight: FontWeight.w900),
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      [
-                        if (profile.handle.isNotEmpty) profile.handle,
-                        if (profile.city.isNotEmpty) profile.city,
-                      ].join(' · '),
-                      style: AppText.grotesk(size: 12, color: AppColors.white(0.5)),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            [
+                              if (profile.handle.isNotEmpty) profile.handle,
+                              if (profile.city.isNotEmpty) profile.city,
+                            ].join(' · '),
+                            style: AppText.grotesk(size: 12, color: AppColors.white(0.5)),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (context.read<Session>().isLoggedIn) ...[
+                          const SizedBox(width: 6),
+                          GestureDetector(
+                            onTap: () => _editHandle(context, profile.handle),
+                            behavior: HitTestBehavior.opaque,
+                            child: Icon(Icons.edit, size: 13, color: AppColors.accent),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 6),
                     AppChip(
@@ -259,6 +275,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
         style: AppText.grotesk(size: 13, color: AppColors.white(0.5)),
       ),
     );
+  }
+
+  Future<void> _editHandle(BuildContext context, String current) async {
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (_) => _EditHandleDialog(current: current),
+    );
+    if (changed == true && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Handle actualizado ✅', style: AppText.grotesk(size: 13)),
+          backgroundColor: AppColors.accent,
+        ),
+      );
+    }
   }
 
   Future<void> _confirmLogout(BuildContext context) async {
@@ -478,7 +509,7 @@ class _FriendsTabState extends State<_FriendsTab> {
               return ListView.separated(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 180),
                 itemCount: friends.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
                 itemBuilder: (context, i) => _friendCard(friends[i]),
               );
             },
@@ -539,6 +570,121 @@ class _FriendsTabState extends State<_FriendsTab> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Diálogo para editar el handle. Valida formato y unicidad vía Session.
+class _EditHandleDialog extends StatefulWidget {
+  final String current;
+  const _EditHandleDialog({required this.current});
+
+  @override
+  State<_EditHandleDialog> createState() => _EditHandleDialogState();
+}
+
+class _EditHandleDialogState extends State<_EditHandleDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.current.replaceFirst('@', ''));
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final err = await context.read<Session>().setHandle(_ctrl.text);
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() {
+        _loading = false;
+        _error = err;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.bgElev,
+      title: Text('Editar handle',
+          style: AppText.archivo(size: 18, weight: FontWeight.w800)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: const Color(0xE011181F),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.white(0.1)),
+            ),
+            child: Row(
+              children: [
+                Text('@',
+                    style: AppText.archivo(
+                        size: 16, weight: FontWeight.w800, color: AppColors.accent)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: TextField(
+                    controller: _ctrl,
+                    autofocus: true,
+                    style: AppText.grotesk(size: 14),
+                    cursorColor: AppColors.accent,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => _save(),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9._]')),
+                      LengthLimitingTextInputFormatter(20),
+                    ],
+                    decoration: InputDecoration(
+                      hintText: 'tu.handle',
+                      hintStyle: AppText.grotesk(size: 14, color: AppColors.white(0.35)),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!,
+                style: AppText.grotesk(size: 12, color: const Color(0xFFFF8A8D))),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _loading ? null : () => Navigator.pop(context, false),
+          child: Text('Cancelar',
+              style: AppText.grotesk(size: 13, color: AppColors.white(0.6))),
+        ),
+        TextButton(
+          onPressed: _loading ? null : _save,
+          child: _loading
+              ? SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent),
+                )
+              : Text('Guardar',
+                  style: AppText.grotesk(
+                      size: 13, weight: FontWeight.w700, color: AppColors.accent)),
+        ),
+      ],
     );
   }
 }

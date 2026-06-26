@@ -109,6 +109,34 @@ class Profile {
     };
   }
 
+  Profile copyWith({
+    String? name,
+    String? handle,
+    String? phone,
+    String? city,
+    String? position,
+    double? height,
+    String? avatar,
+  }) {
+    return Profile(
+      pageId: pageId,
+      name: name ?? this.name,
+      handle: handle ?? this.handle,
+      phone: phone ?? this.phone,
+      city: city ?? this.city,
+      lat: lat,
+      lng: lng,
+      avatar: avatar ?? this.avatar,
+      position: position ?? this.position,
+      height: height ?? this.height,
+      games: games,
+      courts: courts,
+      streak: streak,
+      rating: rating,
+      userEmail: userEmail,
+    );
+  }
+
   /// Para cachear la sesión en SharedPreferences (restauración offline).
   Map<String, dynamic> toJson() => {
         'pageId': pageId,

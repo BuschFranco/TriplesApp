@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
@@ -35,7 +36,7 @@ class AppTabBar extends StatelessWidget {
             children: [
               _tabItem(AppTab.home, 'Mapa', Icons.map_outlined),
               _tabItem(AppTab.list, 'Canchas', Icons.sports_basketball_outlined),
-              _plusButton(),
+              _PlusButton(onTap: () => onChange(AppTab.plus)),
               _tabItem(AppTab.chat, 'Crew', Icons.chat_bubble_outline),
               _tabItem(AppTab.profile, 'Perfil', Icons.person_outline),
             ],
@@ -73,12 +74,69 @@ class AppTabBar extends StatelessWidget {
     );
   }
 
-  Widget _plusButton() {
+}
+
+class _PlusButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _PlusButton({required this.onTap});
+
+  @override
+  State<_PlusButton> createState() => _PlusButtonState();
+}
+
+class _PlusButtonState extends State<_PlusButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 480),
+  );
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _handleTap() {
+    _ctrl.forward(from: 0);
+    widget.onTap();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => onChange(AppTab.plus),
-      child: Transform.translate(
-        offset: const Offset(0, -14),
-        child: Container(
+      onTap: _handleTap,
+      behavior: HitTestBehavior.opaque,
+      // Espacio fijo en el layout: la animación se desborda visualmente
+      // (Clip.none) sin agrandar el botón ni mover al resto de la barra.
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (context, child) {
+            final t = _ctrl.value;
+            // Rebote rápido: el botón crece y vuelve (0 → 1 → 0).
+            final scale = 1 + 0.14 * math.sin(t * math.pi);
+            return Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                // Anillo de pulso que se expande y desvanece al tocar.
+                if (t > 0 && t < 1)
+                  Container(
+                    width: 48 + t * 34,
+                    height: 48 + t * 34,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16 + t * 12),
+                      color: AppColors.accent.withAlpha(((1 - t) * 110).round()),
+                    ),
+                  ),
+                Transform.scale(scale: scale, child: child),
+              ],
+            );
+          },
+          child: Container(
           width: 48,
           height: 48,
           decoration: BoxDecoration(
@@ -97,6 +155,7 @@ class AppTabBar extends StatelessWidget {
             ],
           ),
           child: const Icon(Icons.add, color: Colors.white, size: 24),
+        ),
         ),
       ),
     );

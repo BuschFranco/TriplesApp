@@ -44,6 +44,10 @@ class Court {
   final double lat;
   final double lng;
 
+  /// Handle del usuario que propuso la cancha (se lee de la columna
+  /// "CreatedBy" de Notion). Vacío en las canchas mock.
+  final String proposedBy;
+
   const Court({
     required this.id,
     required this.name,
@@ -65,6 +69,7 @@ class Court {
     required this.desc,
     required this.lat,
     required this.lng,
+    this.proposedBy = '',
   });
 
   String get statusName => switch (status) {
@@ -98,6 +103,7 @@ class Court {
       desc: NotionService.readText(p, 'Desc'),
       lat: NotionService.readNumber(p, 'Lat'),
       lng: NotionService.readNumber(p, 'Lng'),
+      proposedBy: NotionService.readText(p, 'CreatedBy'),
     );
   }
 

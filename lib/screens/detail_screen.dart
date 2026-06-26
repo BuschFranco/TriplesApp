@@ -127,7 +127,7 @@ class DetailScreen extends StatelessWidget {
             child: Image.network(
               court.img,
               fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(color: AppColors.bgElev),
+              errorBuilder: (_, _, _) => Container(color: AppColors.bgElev),
             ),
           ),
           Positioned.fill(

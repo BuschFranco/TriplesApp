@@ -143,7 +143,7 @@ class _CourtListItem extends StatelessWidget {
                     height: 140,
                     width: double.infinity,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(
+                    errorBuilder: (_, _, _) => Container(
                       height: 140,
                       color: AppColors.bgElev,
                     ),
@@ -191,6 +191,32 @@ class _CourtListItem extends StatelessWidget {
                         _miniBadge(b),
                         const SizedBox(width: 5),
                       ],
+                      const Spacer(),
+                      if (court.proposedBy.isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.black(0.6),
+                            borderRadius: BorderRadius.circular(100),
+                            border: Border.all(color: AppColors.accent.withAlpha(90)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.add_location_alt_outlined,
+                                  size: 10, color: AppColors.accent),
+                              const SizedBox(width: 4),
+                              Text(
+                                court.proposedBy,
+                                style: AppText.grotesk(
+                                  size: 10,
+                                  weight: FontWeight.w700,
+                                  color: AppColors.accent,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                     ],
                   ),
                 ),

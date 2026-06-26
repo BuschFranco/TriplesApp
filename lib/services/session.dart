@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../data/models.dart';
 import '../notion/notion_config.dart';
+import 'friends_service.dart';
 import 'notion_service.dart';
 
 /// Estado de sesión del usuario. Maneja signup/login/logout contra Notion
@@ -26,6 +27,11 @@ class Session extends ChangeNotifier {
   bool get restoring => _restoring;
   bool get isLoggedIn => _profile != null;
   bool get notionReady => _notion.isConfigured;
+
+  /// True si el usuario está logueado pero todavía no definió su handle
+  /// (recién registrado). Fuerza la pantalla de elección de handle.
+  bool get needsHandle =>
+      _profile != null && (_profile?.handle ?? '').trim().isEmpty;
 
   /// Hash prototipo (con el email como sal liviana). No es auth de producción.
   static String _hash(String email, String password) =>
@@ -95,10 +101,11 @@ class Session extends ChangeNotifier {
       );
       if (existing.isNotEmpty) return 'Ya existe una cuenta con ese email.';
 
-      final handle = '@${name.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '.')}';
+      // El handle NO se autogenera: se define después del registro en la
+      // pantalla de handle (así evitamos colisiones con uno ya tomado).
       final newProfile = Profile(
         name: name.trim(),
-        handle: handle,
+        handle: '',
         city: city.trim(),
         phone: phone.trim(),
         userEmail: email,
@@ -117,6 +124,61 @@ class Session extends ChangeNotifier {
       });
 
       await _persist(email, Profile.fromNotion(profilePage));
+      return null;
+    } on NotionException catch (e) {
+      return 'Error conectando con Notion (${e.statusCode}).';
+    } catch (e) {
+      return 'Error inesperado: $e';
+    }
+  }
+
+  /// Valida el formato del handle. Devuelve un mensaje de error o null si es OK.
+  static String? validateHandleFormat(String rawHandle) {
+    final h = FriendsService.normalizeHandle(rawHandle);
+    final body = h.startsWith('@') ? h.substring(1) : h;
+    if (body.isEmpty) return 'Ingresá un handle.';
+    if (body.length < 3) return 'El handle debe tener al menos 3 caracteres.';
+    if (body.length > 20) return 'El handle no puede superar los 20 caracteres.';
+    if (!RegExp(r'^[a-z0-9._]+$').hasMatch(body)) {
+      return 'Solo letras, números, punto (.) o guion bajo (_).';
+    }
+    return null;
+  }
+
+  /// Indica si un handle ya está tomado por OTRO perfil (excluye el propio).
+  Future<bool> isHandleTaken(String rawHandle, {String? excludePageId}) async {
+    final handle = FriendsService.normalizeHandle(rawHandle);
+    final rows = await _notion.queryDatabase(
+      NotionConfig.dbProfiles,
+      filter: NotionService.filterText('Handle', handle),
+    );
+    return rows.any((r) => (r['id']?.toString() ?? '') != excludePageId);
+  }
+
+  /// Define o cambia el handle del usuario actual. Devuelve null si OK, o un
+  /// mensaje de error (formato inválido, ya tomado, o error de red).
+  Future<String?> setHandle(String rawHandle) async {
+    if (!_notion.isConfigured) {
+      return 'Notion no está configurado (falta el token).';
+    }
+    final prof = _profile;
+    final email = _email;
+    if (prof == null || email == null) return 'No hay sesión activa.';
+
+    final fmtErr = validateHandleFormat(rawHandle);
+    if (fmtErr != null) return fmtErr;
+    final handle = FriendsService.normalizeHandle(rawHandle);
+
+    if (handle == prof.handle) return null; // sin cambios
+
+    try {
+      if (await isHandleTaken(handle, excludePageId: prof.pageId)) {
+        return 'Ese handle ya está en uso. Probá con otro.';
+      }
+      await _notion.updatePage(prof.pageId, {
+        'Handle': NotionService.richText(handle),
+      });
+      await _persist(email, prof.copyWith(handle: handle));
       return null;
     } on NotionException catch (e) {
       return 'Error conectando con Notion (${e.statusCode}).';

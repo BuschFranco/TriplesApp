@@ -69,7 +69,8 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   int _index = 0;
   GoogleMapController? _mapCtrl;
   final TextEditingController _searchCtrl = TextEditingController();
@@ -77,23 +78,124 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showSearch = false;
   bool _locating = false;
 
-  Court get _court =>
-      widget.courts[_index.clamp(0, widget.courts.length - 1)];
+  // Filtros rápidos activos (chips debajo del buscador). "Cerca" ordena por
+  // cercanía a la ubicación del usuario; el resto filtra la lista.
+  final Set<String> _activeFilters = {'Cerca'};
+  Position? _userPos;
+
+  // Punto de "mi ubicación" con animación de pulso. _userScreen es la posición
+  // en pantalla (px lógicos) de _userPos, recalculada al mover la cámara.
+  late final AnimationController _pulseCtrl;
+  Offset? _userScreen;
+
+  // Canchas visibles tras aplicar los filtros activos. Alimenta tanto los
+  // marcadores del mapa como la tarjeta inferior.
+  List<Court> _filtered = [];
+
+  Court? get _court => _filtered.isEmpty
+      ? null
+      : _filtered[_index.clamp(0, _filtered.length - 1)];
 
   // Markers cacheados: solo se recalculan cuando cambian las canchas o el
   // índice seleccionado, no en cada setState (buscar, spinner, etc.).
   Set<Marker> _markers = {};
 
+  void _applyFilters() {
+    final list = widget.courts.where((c) {
+      if (_activeFilters.contains('Abierto ahora') &&
+          c.status != CourtStatus.open) {
+        return false;
+      }
+      if (_activeFilters.contains('Iluminada') && !c.lit) return false;
+      if (_activeFilters.contains('Gratis') && !c.free) return false;
+      if (_activeFilters.contains('Interior') && c.type != 'Interior') {
+        return false;
+      }
+      return true;
+    }).toList();
+
+    if (_activeFilters.contains('Cerca') && _userPos != null) {
+      final p = _userPos!;
+      list.sort((a, b) => Geolocator.distanceBetween(
+              p.latitude, p.longitude, a.lat, a.lng)
+          .compareTo(
+              Geolocator.distanceBetween(p.latitude, p.longitude, b.lat, b.lng)));
+    }
+
+    _filtered = list;
+    if (_index >= _filtered.length) _index = 0;
+    _rebuildMarkers();
+  }
+
+  Future<void> _toggleFilter(String label) async {
+    setState(() {
+      if (_activeFilters.contains(label)) {
+        _activeFilters.remove(label);
+      } else {
+        _activeFilters.add(label);
+      }
+    });
+    // Al activar "Cerca" sin ubicación todavía, la pedimos para poder ordenar.
+    if (label == 'Cerca' && _activeFilters.contains('Cerca') && _userPos == null) {
+      await _ensureUserPosition();
+    }
+    setState(_applyFilters);
+  }
+
+  Future<void> _ensureUserPosition() async {
+    try {
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        return;
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+      );
+      if (!mounted) return;
+      _userPos = pos;
+      _updateUserScreenPos();
+    } catch (_) {}
+  }
+
+  Future<void> _loadInitialPosition() async {
+    try {
+      final perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        return;
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+      );
+      if (!mounted) return;
+      setState(() {
+        _userPos = pos;
+        _applyFilters();
+      });
+      _updateUserScreenPos();
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
     // Si venimos desde el detalle con una cancha en foco, seleccionarla.
+    _applyFilters();
     final fid = widget.focusCourtId;
     if (fid != null) {
-      final idx = widget.courts.indexWhere((c) => c.id == fid);
+      final idx = _filtered.indexWhere((c) => c.id == fid);
       if (idx >= 0) _index = idx;
     }
     _rebuildMarkers();
+    _loadInitialPosition();
   }
 
   @override
@@ -101,7 +203,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.didUpdateWidget(old);
     if (!identical(old.courts, widget.courts) ||
         old.courts.length != widget.courts.length) {
-      _rebuildMarkers();
+      _applyFilters();
     }
     final fid = widget.focusCourtId;
     if (fid != null && fid != old.focusCourtId) {
@@ -111,10 +213,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _rebuildMarkers() {
     _markers = {
-      for (var i = 0; i < widget.courts.length; i++)
+      for (var i = 0; i < _filtered.length; i++)
         Marker(
-          markerId: MarkerId(widget.courts[i].id),
-          position: LatLng(widget.courts[i].lat, widget.courts[i].lng),
+          markerId: MarkerId(_filtered[i].id),
+          position: LatLng(_filtered[i].lat, _filtered[i].lng),
           icon: BitmapDescriptor.defaultMarkerWithHue(
             i == _index ? 22.0 : BitmapDescriptor.hueAzure,
           ),
@@ -124,13 +226,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _focusOnCourt(String courtId) {
-    final idx = widget.courts.indexWhere((c) => c.id == courtId);
+    final idx = _filtered.indexWhere((c) => c.id == courtId);
     if (idx >= 0) {
       setState(() {
         _index = idx;
         _rebuildMarkers();
       });
-      final c = widget.courts[idx];
+      final c = _filtered[idx];
       _mapCtrl?.animateCamera(
         CameraUpdate.newLatLngZoom(LatLng(c.lat, c.lng), 16),
       );
@@ -140,9 +242,29 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _pulseCtrl.dispose();
     _mapCtrl?.dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  // Convierte _userPos (lat/lng) a coordenadas de pantalla para anclar el
+  // punto de ubicación. Se llama al crear el mapa y al mover la cámara.
+  Future<void> _updateUserScreenPos() async {
+    final ctrl = _mapCtrl;
+    final pos = _userPos;
+    if (ctrl == null || pos == null) {
+      if (_userScreen != null && mounted) setState(() => _userScreen = null);
+      return;
+    }
+    try {
+      final sc = await ctrl.getScreenCoordinate(
+        LatLng(pos.latitude, pos.longitude),
+      );
+      if (!mounted) return;
+      final ratio = MediaQuery.of(context).devicePixelRatio;
+      setState(() => _userScreen = Offset(sc.x / ratio, sc.y / ratio));
+    } catch (_) {}
   }
 
   void _onSelectIndex(int i) {
@@ -151,7 +273,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _rebuildMarkers();
     });
     _mapCtrl?.animateCamera(
-      CameraUpdate.newLatLng(LatLng(widget.courts[i].lat, widget.courts[i].lng)),
+      CameraUpdate.newLatLng(LatLng(_filtered[i].lat, _filtered[i].lng)),
     );
   }
 
@@ -218,14 +340,16 @@ class _HomeScreenState extends State<HomeScreen> {
             onMapCreated: (ctrl) {
               _mapCtrl = ctrl;
               ctrl.setMapStyle(_kMapStyle);
-              if (widget.focusCourtId != null && widget.courts.isNotEmpty) {
-                final c = _court;
+              final c = _court;
+              if (widget.focusCourtId != null && c != null) {
                 ctrl.animateCamera(
                   CameraUpdate.newLatLngZoom(LatLng(c.lat, c.lng), 16),
                 );
                 widget.onFocusConsumed?.call();
               }
+              _updateUserScreenPos();
             },
+            onCameraMove: (_) => _updateUserScreenPos(),
             initialCameraPosition: const CameraPosition(
               target: LatLng(-34.6037, -58.3816),
               zoom: 12,
@@ -237,6 +361,7 @@ class _HomeScreenState extends State<HomeScreen> {
             mapToolbarEnabled: false,
             tiltGesturesEnabled: false,
           ),
+          _userLocationDot(),
           Positioned(
             top: 54,
             left: 16,
@@ -263,10 +388,10 @@ class _HomeScreenState extends State<HomeScreen> {
             child: _locateBtn(),
           ),
           Positioned(
-            bottom: 110,
+            bottom: 148,
             left: 0,
             right: 0,
-            child: _bottomSwipe(),
+            child: _filtered.isEmpty ? _emptyFilterCard() : _bottomSwipe(),
           ),
         ],
       ),
@@ -377,23 +502,40 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _quickChips() {
-    final chips = [
-      ('Cerca', true),
-      ('Abierto ahora', false),
-      ('Iluminada', false),
-      ('Gratis', false),
-      ('Interior', false),
-    ];
+    const labels = ['Cerca', 'Abierto ahora', 'Iluminada', 'Gratis', 'Interior'];
     return SizedBox(
       height: 34,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: chips.length,
+        itemCount: labels.length,
         separatorBuilder: (context, index) => const SizedBox(width: 8),
         itemBuilder: (context, i) => AppChip(
-          label: chips[i].$1,
-          active: chips[i].$2,
+          label: labels[i],
+          active: _activeFilters.contains(labels[i]),
+          onTap: () => _toggleFilter(labels[i]),
+        ),
+      ),
+    );
+  }
+
+  Widget _emptyFilterCard() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: _glassContainer(
+        radius: 20,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+        child: Row(
+          children: [
+            Icon(Icons.search_off, color: AppColors.white(0.5), size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Ninguna cancha coincide con los filtros',
+                style: AppText.grotesk(size: 13, color: AppColors.white(0.7)),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -419,6 +561,60 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _locating = false);
     }
+  }
+
+  Widget _userLocationDot() {
+    final p = _userScreen;
+    if (p == null) return const SizedBox.shrink();
+    const box = 96.0;
+    return Positioned(
+      left: p.dx - box / 2,
+      top: p.dy - box / 2,
+      width: box,
+      height: box,
+      child: IgnorePointer(
+        child: Center(
+          child: AnimatedBuilder(
+            animation: _pulseCtrl,
+            builder: (context, child) {
+              final t = _pulseCtrl.value;
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  // Anillo de pulso que crece y se desvanece.
+                  Container(
+                    width: 20 + t * 56,
+                    height: 20 + t * 56,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppColors.accent.withAlpha(((1 - t) * 90).round()),
+                    ),
+                  ),
+                  child!,
+                ],
+              );
+            },
+            // Punto central fijo.
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.accent,
+                border: Border.all(color: Colors.white, width: 3),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.accent.withAlpha(140),
+                    blurRadius: 12,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _locateBtn() {
@@ -457,17 +653,17 @@ class _HomeScreenState extends State<HomeScreen> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: _CourtSwipeCard(
-            court: _court,
-            onSelect: () => widget.onSelectCourt?.call(_court.id),
-            onPrev: () => _onSelectIndex((_index - 1 + widget.courts.length) % widget.courts.length),
-            onNext: () => _onSelectIndex((_index + 1) % widget.courts.length),
+            court: _court!,
+            onSelect: () => widget.onSelectCourt?.call(_court!.id),
+            onPrev: () => _onSelectIndex((_index - 1 + _filtered.length) % _filtered.length),
+            onNext: () => _onSelectIndex((_index + 1) % _filtered.length),
           ),
         ),
         const SizedBox(height: 10),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            for (var i = 0; i < widget.courts.length; i++) ...[
+            for (var i = 0; i < _filtered.length; i++) ...[
               AnimatedContainer(
                 duration: const Duration(milliseconds: 300),
                 width: i == _index ? 18 : 5,
@@ -477,7 +673,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(3),
                 ),
               ),
-              if (i < widget.courts.length - 1) const SizedBox(width: 5),
+              if (i < _filtered.length - 1) const SizedBox(width: 5),
             ],
           ],
         ),
@@ -589,6 +785,40 @@ class _CourtSwipeCard extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // Handle de quien propuso la cancha (incentiva el aporte).
+                  if (court.proposedBy.isNotEmpty)
+                    Positioned(
+                      bottom: 6,
+                      left: 6,
+                      right: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.black(0.75),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.add_location_alt_outlined,
+                                size: 9, color: AppColors.accent),
+                            const SizedBox(width: 3),
+                            Flexible(
+                              child: Text(
+                                court.proposedBy,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.grotesk(
+                                  size: 9,
+                                  weight: FontWeight.w700,
+                                  color: AppColors.accent,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 ],
               ),
               const SizedBox(width: 14),

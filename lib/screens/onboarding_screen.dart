@@ -18,7 +18,7 @@ class OnboardingScreen extends StatelessWidget {
           Image.network(
             'https://images.unsplash.com/photo-1546519638-68e109498ffc?w=1000&q=80',
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => Container(color: AppColors.bg),
+            errorBuilder: (_, _, _) => Container(color: AppColors.bg),
           ),
           // Gradient overlay
           Container(

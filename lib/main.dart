@@ -5,6 +5,7 @@ import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platf
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/auth_screen.dart';
+import 'screens/handle_setup_screen.dart';
 import 'screens/main_shell.dart';
 import 'screens/onboarding_screen.dart';
 import 'services/courts_provider.dart';
@@ -91,7 +92,10 @@ class _RootState extends State<_Root> {
     final session = context.watch<Session>();
 
     if (_bootstrapping || session.restoring) return const _Splash();
-    if (session.isLoggedIn) return const MainShell();
+    if (session.isLoggedIn) {
+      // Recién registrado sin handle → forzar la elección antes de entrar.
+      return session.needsHandle ? const HandleSetupScreen() : const MainShell();
+    }
 
     if (!_onboardingSeen && !_goAuth) {
       return OnboardingScreen(

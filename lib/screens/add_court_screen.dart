@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../data/courts.dart';
 import '../services/courts_provider.dart';
@@ -39,7 +41,11 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
   final _nameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _hoursCtrl = TextEditingController();
-  final _imgCtrl = TextEditingController();
+
+  final ImagePicker _picker = ImagePicker();
+  // Imagen elegida desde el celular. Por ahora solo vive en el front (preview);
+  // todavía no se sube a la base de datos.
+  XFile? _pickedImage;
 
   String _type = 'Exterior';
   String _surface = 'Asfalto';
@@ -71,7 +77,6 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _hoursCtrl.dispose();
-    _imgCtrl.dispose();
     _priceCtrl.dispose();
     _mapCtrl?.dispose();
     super.dispose();
@@ -137,7 +142,9 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
       name: _nameCtrl.text.trim(),
       area: '',
       dist: '',
-      img: _imgCtrl.text.trim(),
+      // TODO: subir _pickedImage a storage y guardar la URL acá. Por ahora la
+      // imagen elegida solo se previsualiza en el front y no se persiste.
+      img: '',
       rating: 0,
       reviews: 0,
       type: _type,
@@ -156,10 +163,12 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
     );
 
     final courtsProvider = context.read<CourtsProvider>();
-    final email = context.read<Session>().email;
+    // Guardamos el handle del usuario (no el email) para poder mostrar quién
+    // propuso la cancha una vez aprobada.
+    final handle = context.read<Session>().profile?.handle ?? '';
 
     try {
-      await courtsProvider.addCourt(court, createdBy: email);
+      await courtsProvider.addCourt(court, createdBy: handle);
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -404,84 +413,140 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
     );
   }
 
-  Widget _imgField() {
-    final url = _imgCtrl.text.trim();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xE011181F),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.white(0.1)),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  Icon(Icons.link, size: 16, color: AppColors.white(0.4)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: TextField(
-                      controller: _imgCtrl,
-                      keyboardType: TextInputType.url,
-                      onChanged: (_) => setState(() {}),
-                      style: AppText.grotesk(size: 14),
-                      cursorColor: AppColors.accent,
-                      decoration: InputDecoration(
-                        hintText: 'Pegá el link de una imagen (https://...)',
-                        hintStyle: AppText.grotesk(size: 13.5, color: AppColors.white(0.35)),
-                        border: InputBorder.none,
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                    ),
-                  ),
-                  if (url.isNotEmpty)
-                    GestureDetector(
-                      onTap: () => setState(() => _imgCtrl.clear()),
-                      child: Icon(Icons.close, size: 16, color: AppColors.white(0.5)),
-                    ),
-                ],
-              ),
-            ),
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: source,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+      if (picked == null) return;
+      if (!mounted) return;
+      setState(() => _pickedImage = picked);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No se pudo acceder a la imagen',
+              style: AppText.grotesk(size: 13)),
+          backgroundColor: AppColors.bgElev,
+        ),
+      );
+    }
+  }
+
+  void _showImageSourceSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.bgElev,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _imgSourceOption(Icons.photo_library_outlined, 'Elegir de la galería', () {
+                Navigator.pop(sheetCtx);
+                _pickImage(ImageSource.gallery);
+              }),
+              _imgSourceOption(Icons.camera_alt_outlined, 'Tomar una foto', () {
+                Navigator.pop(sheetCtx);
+                _pickImage(ImageSource.camera);
+              }),
+              if (_pickedImage != null)
+                _imgSourceOption(Icons.delete_outline, 'Quitar imagen', () {
+                  Navigator.pop(sheetCtx);
+                  setState(() => _pickedImage = null);
+                }, danger: true),
+            ],
           ),
         ),
-        const SizedBox(height: 10),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: SizedBox(
-            height: 160,
-            width: double.infinity,
-            child: url.isEmpty
-                ? _imgPlaceholder('La vista previa aparece acá')
-                : Image.network(
-                    url,
-                    fit: BoxFit.cover,
-                    loadingBuilder: (context, child, progress) =>
-                        progress == null ? child : _imgPlaceholder('Cargando...'),
-                    errorBuilder: (_, __, ___) =>
-                        _imgPlaceholder('No se pudo cargar esa imagen'),
-                  ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
-  Widget _imgPlaceholder(String text) {
-    return Container(
-      color: const Color(0x331A2430),
-      alignment: Alignment.center,
+  Widget _imgSourceOption(IconData icon, String label, VoidCallback onTap,
+      {bool danger = false}) {
+    final color = danger ? const Color(0xFFE05A5A) : Colors.white;
+    return ListTile(
+      onTap: onTap,
+      leading: Icon(icon, color: color, size: 22),
+      title: Text(label, style: AppText.grotesk(size: 15, color: color)),
+    );
+  }
+
+  Widget _imgField() {
+    final hasImg = _pickedImage != null;
+    return GestureDetector(
+      onTap: _showImageSourceSheet,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: SizedBox(
+          width: double.infinity,
+          height: 180,
+          child: hasImg
+              ? Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.file(File(_pickedImage!.path), fit: BoxFit.cover),
+                    // Botón flotante para cambiar la imagen
+                    Positioned(
+                      right: 10,
+                      bottom: 10,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xCC11181F),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppColors.white(0.15)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.edit, size: 14, color: AppColors.accent),
+                            const SizedBox(width: 6),
+                            Text('Cambiar',
+                                style: AppText.grotesk(size: 12, weight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              : _imgUploadPlaceholder(),
+        ),
+      ),
+    );
+  }
+
+  Widget _imgUploadPlaceholder() {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0x331A2430),
+        border: Border.all(color: AppColors.white(0.12)),
+        borderRadius: BorderRadius.circular(14),
+      ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.image_outlined, size: 28, color: AppColors.white(0.3)),
-          const SizedBox(height: 8),
-          Text(text, style: AppText.grotesk(size: 12, color: AppColors.white(0.4))),
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: AppColors.accent.withAlpha(30),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.add_a_photo_outlined, size: 22, color: AppColors.accent),
+          ),
+          const SizedBox(height: 12),
+          Text('Subir una imagen',
+              style: AppText.grotesk(size: 14, weight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          Text('Galería o cámara',
+              style: AppText.grotesk(size: 12, color: AppColors.white(0.4))),
         ],
       ),
     );
