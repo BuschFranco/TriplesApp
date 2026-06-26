@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/courts_provider.dart';
+import '../services/play_session_service.dart';
+import '../services/profiles_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_tab_bar.dart';
 import 'crew_screen.dart';
@@ -22,6 +24,7 @@ class _MainShellState extends State<MainShell> {
   AppTab _tab = AppTab.home;
   String? _detailCourtId;
   bool _filtersOpen = false;
+  bool _resultPromptOpen = false;
 
   // +1 → new screen enters from the right (going "forward"),
   // -1 → enters from the left (going "back").
@@ -46,10 +49,14 @@ class _MainShellState extends State<MainShell> {
     });
   }
 
-  void _openDetail(String id) => setState(() {
-        _slideDir = 1;
-        _detailCourtId = id;
-      });
+  void _openDetail(String id) {
+    setState(() {
+      _slideDir = 1;
+      _detailCourtId = id;
+    });
+    // Refresca presencia para "Jugando ahora" en el detalle.
+    context.read<ProfilesProvider>().load();
+  }
 
   void _closeDetail() => setState(() {
         _slideDir = -1;
@@ -88,10 +95,77 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
+  Future<void> _askResult(PlaySession s) async {
+    final play = context.read<PlaySessionService>();
+    Widget option(PlayResult r, IconData icon, Color color) {
+      return GestureDetector(
+        onTap: () => Navigator.pop(context, r),
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          margin: const EdgeInsets.only(top: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: AppColors.white(0.05),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.white(0.08)),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 12),
+              Text(r.label,
+                  style: AppText.grotesk(size: 14, weight: FontWeight.w600)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Si el usuario descarta sin responder, se guarda como "Sin información".
+    final chosen = await showDialog<PlayResult>(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.bgElev,
+        scrollable: true,
+        title: Text('¿Cómo te fue?',
+            style: AppText.archivo(size: 18, weight: FontWeight.w800)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${s.courtName.isEmpty ? 'Cancha' : s.courtName} · ${PlaySessionService.fmt(s.seconds)}',
+              style: AppText.grotesk(size: 12, color: AppColors.white(0.55)),
+            ),
+            option(PlayResult.win, Icons.emoji_events_outlined, AppColors.open),
+            option(PlayResult.loss, Icons.thumb_down_outlined,
+                const Color(0xFFFF6B6B)),
+            option(PlayResult.tie, Icons.handshake_outlined, AppColors.white(0.7)),
+            option(PlayResult.training, Icons.fitness_center, AppColors.accent),
+            option(PlayResult.notCounted, Icons.not_interested,
+                AppColors.white(0.5)),
+          ],
+        ),
+      ),
+    );
+    await play.resolvePending(chosen ?? PlayResult.notCounted);
+    if (mounted) setState(() => _resultPromptOpen = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final courts = context.watch<CourtsProvider>().courts;
     final hideTabs = _detailCourtId != null || _filtersOpen;
+
+    // Si hay un partido terminado sin resultado, preguntamos cómo le fue.
+    final pending = context.watch<PlaySessionService>().pending;
+    if (pending != null && !_resultPromptOpen) {
+      _resultPromptOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _askResult(pending);
+      });
+    }
     final bottomInset = MediaQuery.of(context).padding.bottom;
 
     // Home (mapa) persistente: queda SIEMPRE montado (no se recrea el platform
@@ -121,7 +195,10 @@ class _MainShellState extends State<MainShell> {
         ),
       AppTab.plus => const CreateScreen(key: ValueKey('tab:plus')),
       AppTab.chat => const CrewScreen(key: ValueKey('tab:chat')),
-      AppTab.profile => const ProfileScreen(key: ValueKey('tab:profile')),
+      AppTab.profile => ProfileScreen(
+          key: const ValueKey('tab:profile'),
+          onSelectCourt: _openDetail,
+        ),
     };
     final tabKey = ValueKey('tab:${_tab.name}');
 

@@ -48,6 +48,16 @@ class Court {
   /// "CreatedBy" de Notion). Vacío en las canchas mock.
   final String proposedBy;
 
+  /// Snapshot de la insignia de clan al momento del envío (columna
+  /// "CreatedByClan"). Solo se usa como fallback si no se puede resolver el
+  /// perfil en vivo por email.
+  final String proposedByClan;
+
+  /// Email (inmutable) de quien propuso la cancha (columna "CreatedByEmail").
+  /// Es la clave para resolver en vivo su handle y clan actuales desde la base
+  /// Perfiles, así los cambios posteriores se reflejan en las miniaturas.
+  final String proposedByEmail;
+
   const Court({
     required this.id,
     required this.name,
@@ -70,6 +80,8 @@ class Court {
     required this.lat,
     required this.lng,
     this.proposedBy = '',
+    this.proposedByClan = '',
+    this.proposedByEmail = '',
   });
 
   String get statusName => switch (status) {
@@ -104,6 +116,8 @@ class Court {
       lat: NotionService.readNumber(p, 'Lat'),
       lng: NotionService.readNumber(p, 'Lng'),
       proposedBy: NotionService.readText(p, 'CreatedBy'),
+      proposedByClan: NotionService.readText(p, 'CreatedByClan'),
+      proposedByEmail: NotionService.readText(p, 'CreatedByEmail'),
     );
   }
 
@@ -111,6 +125,8 @@ class Court {
   /// Por defecto entra como "Sin definir" (pendiente de moderación).
   Map<String, dynamic> toNotionProperties({
     String? createdBy,
+    String? createdByClan,
+    String? createdByEmail,
     String approval = CourtApproval.pending,
   }) {
     return {
@@ -136,6 +152,10 @@ class Court {
       'Lat': NotionService.number(lat),
       'Lng': NotionService.number(lng),
       if (createdBy != null) 'CreatedBy': NotionService.richText(createdBy),
+      if (createdByClan != null)
+        'CreatedByClan': NotionService.richText(createdByClan),
+      if (createdByEmail != null)
+        'CreatedByEmail': NotionService.richText(createdByEmail),
       'Aprobacion': NotionService.select(approval),
     };
   }

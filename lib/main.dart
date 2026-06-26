@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
@@ -8,8 +9,12 @@ import 'screens/auth_screen.dart';
 import 'screens/handle_setup_screen.dart';
 import 'screens/main_shell.dart';
 import 'screens/onboarding_screen.dart';
+import 'notion/notion_config.dart';
 import 'services/courts_provider.dart';
 import 'services/favorites_provider.dart';
+import 'services/notion_service.dart';
+import 'services/play_session_service.dart';
+import 'services/profiles_provider.dart';
 import 'services/session.dart';
 import 'theme/app_theme.dart';
 import 'widgets/bball_glyph.dart';
@@ -27,7 +32,42 @@ void main() async {
     statusBarIconBrightness: Brightness.light,
     systemNavigationBarColor: AppColors.bg,
   ));
+
+  // Crea (si faltan) las columnas que usan las features nuevas. Idempotente y
+  // sin bloquear el arranque: si falla por permisos, la app sigue funcionando.
+  unawaited(_ensureNotionSchema());
+
   runApp(const TriplesApp());
+}
+
+/// Garantiza el schema de Notion necesario para clan/color y autor de cancha.
+Future<void> _ensureNotionSchema() async {
+  if (!NotionConfig.isConfigured) return;
+  final notion = NotionService();
+  try {
+    await notion.ensureProperties(
+      NotionConfig.dbProfiles,
+      const {
+        'Clan': 'rich_text',
+        'AvatarColor': 'rich_text',
+        'ClanTextColor': 'rich_text',
+        'ClanFont': 'rich_text',
+        'EquippedTitle': 'rich_text',
+        'ShareStatus': 'checkbox',
+        'ShareCourt': 'checkbox',
+        'ShareTime': 'checkbox',
+        'Playing': 'checkbox',
+        'PlayingCourtId': 'rich_text',
+        'PlayingSince': 'date',
+      },
+    );
+    await notion.ensureProperties(
+      NotionConfig.dbCourts,
+      const {'CreatedByClan': 'rich_text', 'CreatedByEmail': 'rich_text'},
+    );
+  } catch (_) {
+    // Permisos insuficientes u otro error: se puede crear a mano en Notion.
+  }
 }
 
 class TriplesApp extends StatelessWidget {
@@ -40,6 +80,8 @@ class TriplesApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => Session()..restore()),
         ChangeNotifierProvider(create: (_) => CourtsProvider()..load()),
         ChangeNotifierProvider(create: (_) => FavoritesProvider()..load()),
+        ChangeNotifierProvider(create: (_) => ProfilesProvider()..load()),
+        ChangeNotifierProvider(create: (_) => PlaySessionService()),
       ],
       child: MaterialApp(
         title: 'Triples',

@@ -1,0 +1,218 @@
+import 'package:flutter/material.dart';
+
+/// Color dorado para logros/títulos desbloqueados.
+const Color kGold = Color(0xFFE9B949);
+
+/// Métricas locales sobre las que se evalúan los logros.
+enum AchievementMetric { partidos, canchas, victorias, racha, horas }
+
+/// Snapshot de las estadísticas del jugador para evaluar logros.
+class PlayStats {
+  final int partidos;
+  final int canchas;
+  final int victorias;
+  final int maxRacha;
+  final int segundos;
+
+  const PlayStats({
+    required this.partidos,
+    required this.canchas,
+    required this.victorias,
+    required this.maxRacha,
+    required this.segundos,
+  });
+
+  int value(AchievementMetric m) => switch (m) {
+        AchievementMetric.partidos => partidos,
+        AchievementMetric.canchas => canchas,
+        AchievementMetric.victorias => victorias,
+        AchievementMetric.racha => maxRacha,
+        AchievementMetric.horas => segundos ~/ 3600,
+      };
+}
+
+/// Un logro: se desbloquea cuando la métrica alcanza [goal].
+class Achievement {
+  final String id;
+  final String name;
+  final String desc;
+  final IconData icon;
+  final AchievementMetric metric;
+  final int goal;
+
+  const Achievement({
+    required this.id,
+    required this.name,
+    required this.desc,
+    required this.icon,
+    required this.metric,
+    required this.goal,
+  });
+
+  bool unlocked(PlayStats s) => s.value(metric) >= goal;
+  int progress(PlayStats s) => s.value(metric).clamp(0, goal);
+}
+
+/// Catálogo de logros. Basado en lo que la app ya mide: partidos jugados,
+/// canchas únicas, victorias, racha de victorias y horas jugadas.
+const List<Achievement> kAchievements = [
+  Achievement(
+    id: 'play_1',
+    name: 'Primeros pasos',
+    desc: 'Jugá tu primer partido',
+    icon: Icons.sports_basketball,
+    metric: AchievementMetric.partidos,
+    goal: 1,
+  ),
+  Achievement(
+    id: 'play_10',
+    name: 'Habitué',
+    desc: 'Jugá 10 partidos',
+    icon: Icons.repeat,
+    metric: AchievementMetric.partidos,
+    goal: 10,
+  ),
+  Achievement(
+    id: 'play_50',
+    name: 'Veterano',
+    desc: 'Jugá 50 partidos',
+    icon: Icons.military_tech,
+    metric: AchievementMetric.partidos,
+    goal: 50,
+  ),
+  Achievement(
+    id: 'play_100',
+    name: 'Leyenda',
+    desc: 'Jugá 100 partidos',
+    icon: Icons.auto_awesome,
+    metric: AchievementMetric.partidos,
+    goal: 100,
+  ),
+  Achievement(
+    id: 'courts_5',
+    name: 'Explorador',
+    desc: 'Jugá en 5 canchas diferentes',
+    icon: Icons.explore,
+    metric: AchievementMetric.canchas,
+    goal: 5,
+  ),
+  Achievement(
+    id: 'courts_20',
+    name: 'Trotamundos',
+    desc: 'Jugá en 20 canchas diferentes',
+    icon: Icons.map,
+    metric: AchievementMetric.canchas,
+    goal: 20,
+  ),
+  Achievement(
+    id: 'courts_50',
+    name: 'Coleccionista',
+    desc: 'Jugá en 50 canchas diferentes',
+    icon: Icons.collections_bookmark,
+    metric: AchievementMetric.canchas,
+    goal: 50,
+  ),
+  Achievement(
+    id: 'wins_10',
+    name: 'Ganador',
+    desc: 'Ganá 10 partidos',
+    icon: Icons.thumb_up,
+    metric: AchievementMetric.victorias,
+    goal: 10,
+  ),
+  Achievement(
+    id: 'wins_50',
+    name: 'Campeón',
+    desc: 'Ganá 50 partidos',
+    icon: Icons.emoji_events,
+    metric: AchievementMetric.victorias,
+    goal: 50,
+  ),
+  Achievement(
+    id: 'streak_3',
+    name: 'En llamas',
+    desc: 'Conseguí una racha de 3 victorias',
+    icon: Icons.local_fire_department,
+    metric: AchievementMetric.racha,
+    goal: 3,
+  ),
+  Achievement(
+    id: 'streak_5',
+    name: 'Imparable',
+    desc: 'Conseguí una racha de 5 victorias',
+    icon: Icons.bolt,
+    metric: AchievementMetric.racha,
+    goal: 5,
+  ),
+  Achievement(
+    id: 'streak_10',
+    name: 'Invencible',
+    desc: 'Conseguí una racha de 10 victorias',
+    icon: Icons.shield_moon,
+    metric: AchievementMetric.racha,
+    goal: 10,
+  ),
+  Achievement(
+    id: 'hours_10',
+    name: 'Maratonista',
+    desc: 'Acumulá 10 horas jugadas',
+    icon: Icons.timer,
+    metric: AchievementMetric.horas,
+    goal: 10,
+  ),
+  Achievement(
+    id: 'hours_50',
+    name: 'Incansable',
+    desc: 'Acumulá 50 horas jugadas',
+    icon: Icons.bedtime_off,
+    metric: AchievementMetric.horas,
+    goal: 50,
+  ),
+];
+
+Achievement? achievementById(String id) {
+  for (final a in kAchievements) {
+    if (a.id == id) return a;
+  }
+  return null;
+}
+
+/// Un título coleccionable: se desbloquea al conseguir TODOS los logros de
+/// [requires] (uno o más).
+class GameTitle {
+  final String name;
+  final List<String> requires; // ids de logros requeridos
+
+  const GameTitle(this.name, this.requires);
+
+  bool unlocked(PlayStats s) =>
+      requires.every((id) => achievementById(id)?.unlocked(s) ?? false);
+
+  /// Texto "Se desbloquea al conseguir el logro X" / "los logros X, Y y Z".
+  String get unlockDesc {
+    final names = requires
+        .map((id) => achievementById(id)?.name ?? id)
+        .map((n) => '"$n"')
+        .toList();
+    if (names.length == 1) {
+      return 'Se desbloquea al conseguir el logro ${names.first}.';
+    }
+    final last = names.removeLast();
+    return 'Se desbloquea al conseguir los logros ${names.join(', ')} y $last.';
+  }
+}
+
+/// Catálogo de títulos. Algunos requieren un logro; otros, varios.
+const List<GameTitle> kTitles = [
+  GameTitle('Veterano de la cancha', ['play_50']),
+  GameTitle('Leyenda viviente', ['play_100']),
+  GameTitle('Trotamundos', ['courts_20']),
+  GameTitle('Coleccionista de canchas', ['courts_50']),
+  GameTitle('Campeón', ['wins_50']),
+  GameTitle('Imparable', ['streak_5']),
+  GameTitle('Invencible', ['streak_10']),
+  GameTitle('Maratonista', ['hours_10']),
+  // Títulos que requieren varios logros:
+  GameTitle('Maestro del juego', ['play_100', 'wins_50']),
+  GameTitle('Crack total', ['courts_50', 'hours_50', 'streak_10']),
+];

@@ -163,12 +163,21 @@ class _AddCourtScreenState extends State<AddCourtScreen> {
     );
 
     final courtsProvider = context.read<CourtsProvider>();
-    // Guardamos el handle del usuario (no el email) para poder mostrar quién
-    // propuso la cancha una vez aprobada.
-    final handle = context.read<Session>().profile?.handle ?? '';
+    // Guardamos el email (inmutable) para resolver en vivo el handle y clan
+    // actuales del proponente, más un snapshot de ambos como fallback.
+    final session = context.read<Session>();
+    final profile = session.profile;
+    final handle = profile?.handle ?? '';
+    final clan = profile?.clan ?? '';
+    final email = session.email ?? profile?.userEmail ?? '';
 
     try {
-      await courtsProvider.addCourt(court, createdBy: handle);
+      await courtsProvider.addCourt(
+        court,
+        createdBy: handle,
+        createdByClan: clan,
+        createdByEmail: email,
+      );
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(

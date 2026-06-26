@@ -4,6 +4,14 @@
 <dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Necesitamos la cámara para que puedas tomar una foto de la cancha.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Usamos tu ubicación para mostrarte canchas cerca y detectar cuándo estás jugando.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Con permiso "Siempre" detectamos si estás jugando en una cancha aunque la app esté en segundo plano.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Necesitamos acceso a tus fotos para que puedas elegir una imagen de la cancha.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>

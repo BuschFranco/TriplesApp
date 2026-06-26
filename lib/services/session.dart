@@ -187,6 +187,129 @@ class Session extends ChangeNotifier {
     }
   }
 
+  /// Guarda la insignia de clan (hasta 4 caracteres) y el color del avatar
+  /// (hex de 6 dígitos, sin '#') en la base Perfiles. Devuelve null si OK o un
+  /// mensaje de error.
+  Future<String?> setClanBadge({
+    required String clan,
+    required String color,
+    required String textColor,
+    required String font,
+  }) async {
+    if (!_notion.isConfigured) {
+      return 'Notion no está configurado (falta el token).';
+    }
+    final prof = _profile;
+    final email = _email;
+    if (prof == null || email == null) return 'No hay sesión activa.';
+
+    final c = clan.trim().toUpperCase();
+    if (c.length > 4) return 'La insignia no puede superar los 4 caracteres.';
+
+    try {
+      await _notion.updatePage(prof.pageId, {
+        'Clan': NotionService.richText(c),
+        'AvatarColor': NotionService.richText(color),
+        'ClanTextColor': NotionService.richText(textColor),
+        'ClanFont': NotionService.richText(font),
+      });
+      await _persist(
+        email,
+        prof.copyWith(
+          clan: c,
+          avatarColor: color,
+          clanTextColor: textColor,
+          clanFont: font,
+        ),
+      );
+      return null;
+    } on NotionException catch (e) {
+      return 'Error conectando con Notion (${e.statusCode}).';
+    } catch (e) {
+      return 'Error inesperado: $e';
+    }
+  }
+
+  /// Equipa (o saca, si es vacío) el título visible bajo el nombre. Se guarda
+  /// en Notion para que los amigos lo vean.
+  Future<String?> setTitle(String title) async {
+    final prof = _profile;
+    final email = _email;
+    if (prof == null || email == null) return 'No hay sesión activa.';
+    if (!_notion.isConfigured) return 'Notion no está configurado.';
+    try {
+      await _notion.updatePage(prof.pageId, {
+        'EquippedTitle': NotionService.richText(title),
+      });
+      await _persist(email, prof.copyWith(title: title));
+      return null;
+    } on NotionException catch (e) {
+      return 'Error conectando con Notion (${e.statusCode}).';
+    } catch (e) {
+      return 'Error inesperado: $e';
+    }
+  }
+
+  /// Actualiza las preferencias de privacidad (qué comparte con sus amigos).
+  Future<String?> setSharePrefs({
+    bool? shareStatus,
+    bool? shareCourt,
+    bool? shareTime,
+  }) async {
+    final prof = _profile;
+    final email = _email;
+    if (prof == null || email == null) return 'No hay sesión activa.';
+    if (!_notion.isConfigured) return 'Notion no está configurado.';
+    try {
+      await _notion.updatePage(prof.pageId, {
+        if (shareStatus != null) 'ShareStatus': NotionService.checkbox(shareStatus),
+        if (shareCourt != null) 'ShareCourt': NotionService.checkbox(shareCourt),
+        if (shareTime != null) 'ShareTime': NotionService.checkbox(shareTime),
+      });
+      await _persist(
+        email,
+        prof.copyWith(
+          shareStatus: shareStatus,
+          shareCourt: shareCourt,
+          shareTime: shareTime,
+        ),
+      );
+      return null;
+    } on NotionException catch (e) {
+      return 'Error conectando con Notion (${e.statusCode}).';
+    } catch (e) {
+      return 'Error inesperado: $e';
+    }
+  }
+
+  /// Actualiza la presencia "jugando" en Notion. Best-effort (no bloquea ni
+  /// muestra error): lo dispara el detector automático de partido.
+  Future<void> setPresence({
+    required bool playing,
+    String courtId = '',
+    DateTime? since,
+  }) async {
+    final prof = _profile;
+    final email = _email;
+    if (prof == null || email == null || !_notion.isConfigured) return;
+    final sinceIso = playing && since != null ? since.toIso8601String() : '';
+    try {
+      await _notion.updatePage(prof.pageId, {
+        'Playing': NotionService.checkbox(playing),
+        'PlayingCourtId': NotionService.richText(playing ? courtId : ''),
+        'PlayingSince': NotionService.date(sinceIso.isEmpty ? null : sinceIso),
+      });
+      await _persist(
+        email,
+        prof.copyWith(
+          playing: playing,
+          playingCourtId: playing ? courtId : '',
+          playingSince: sinceIso,
+        ),
+      );
+    } catch (_) {/* sin red: se reintenta en el próximo cambio de estado */}
+  }
+
   Future<void> logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kEmail);

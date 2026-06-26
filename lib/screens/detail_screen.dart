@@ -6,9 +6,12 @@ import '../data/models.dart';
 import '../notion/notion_config.dart';
 import '../services/favorites_provider.dart';
 import '../services/notion_service.dart';
+import '../services/play_session_service.dart';
+import '../services/profiles_provider.dart';
 import '../services/session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_chip.dart';
+import '../widgets/court_image.dart';
 import '../widgets/section_title.dart';
 import '../widgets/status_dot.dart';
 
@@ -46,6 +49,43 @@ class DetailScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _ratingStrip(court),
+                    Builder(builder: (context) {
+                      final secs = context
+                          .watch<PlaySessionService>()
+                          .secondsForCourt(court.id);
+                      if (secs <= 0) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 16),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0x801A2430),
+                            border: Border.all(color: AppColors.white(0.06)),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.timer_outlined,
+                                  size: 18, color: AppColors.accent),
+                              const SizedBox(width: 10),
+                              Text('Jugaste acá',
+                                  style: AppText.grotesk(
+                                      size: 13, color: AppColors.white(0.7))),
+                              const Spacer(),
+                              Text(
+                                PlaySessionService.fmt(secs),
+                                style: AppText.archivo(
+                                    size: 15,
+                                    weight: FontWeight.w800,
+                                    color: AppColors.accent),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                    _playingNow(court),
                     const SizedBox(height: 22),
                     const SectionTitle(title: 'Amenities'),
                     Wrap(
@@ -123,13 +163,7 @@ class DetailScreen extends StatelessWidget {
       height: 360,
       child: Stack(
         children: [
-          Positioned.fill(
-            child: Image.network(
-              court.img,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => Container(color: AppColors.bgElev),
-            ),
-          ),
+          Positioned.fill(child: CourtImage(url: court.img)),
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
@@ -212,6 +246,79 @@ class DetailScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// Lista de jugadores que están jugando ahora en esta cancha (solo los que
+  /// lo permiten: shareCourt; el tiempo se muestra si además shareTime).
+  Widget _playingNow(Court court) {
+    return Builder(builder: (context) {
+      final players = context
+          .watch<ProfilesProvider>()
+          .all
+          .where((p) =>
+              p.playing && p.shareCourt && p.playingCourtId == court.id)
+          .toList();
+      if (players.isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.only(top: 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionTitle(title: 'Jugando ahora'),
+            for (final p in players)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0x801A2430),
+                    border: Border.all(color: AppColors.white(0.06)),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: AppColors.open,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          p.handle.isNotEmpty
+                              ? p.handle
+                              : (p.name.isEmpty ? 'Jugador' : p.name),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.grotesk(
+                              size: 13, weight: FontWeight.w600),
+                        ),
+                      ),
+                      if (p.shareTime && p.playingSince.isNotEmpty)
+                        Builder(builder: (_) {
+                          final since = DateTime.tryParse(p.playingSince);
+                          if (since == null) return const SizedBox.shrink();
+                          return Text(
+                            PlaySessionService.fmt(
+                                DateTime.now().difference(since).inSeconds),
+                            style: AppText.grotesk(
+                                size: 13,
+                                weight: FontWeight.w700,
+                                color: AppColors.accent),
+                          );
+                        }),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    });
   }
 
   Widget _ratingStrip(Court court) {

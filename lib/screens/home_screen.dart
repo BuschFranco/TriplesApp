@@ -1,12 +1,16 @@
 import 'dart:convert';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
 import '../data/courts.dart';
+import '../services/play_session_service.dart';
+import '../services/profiles_provider.dart';
+import '../services/session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_chip.dart';
+import '../widgets/court_image.dart';
 import '../widgets/rating_badge.dart';
 import '../widgets/status_dot.dart';
 
@@ -85,12 +89,26 @@ class _HomeScreenState extends State<HomeScreen>
 
   // Punto de "mi ubicación" con animación de pulso. _userScreen es la posición
   // en pantalla (px lógicos) de _userPos, recalculada al mover la cámara.
+  // Es un ValueNotifier para que reposicionar el punto en cada frame del
+  // arrastre no reconstruya todo el Stack (y sus BackdropFilter), que es lo
+  // que tiraba los FPS al deslizar el mapa.
   late final AnimationController _pulseCtrl;
-  Offset? _userScreen;
+  final ValueNotifier<Offset?> _userScreen = ValueNotifier(null);
+  // Evita encolar llamadas async a getScreenCoordinate si una sigue en vuelo.
+  bool _resolvingScreenPos = false;
 
   // Canchas visibles tras aplicar los filtros activos. Alimenta tanto los
   // marcadores del mapa como la tarjeta inferior.
   List<Court> _filtered = [];
+
+  // Carrusel de tarjetas: el PageView permite arrastrar con el dedo y hace
+  // snap. _skipNextPageCamera evita que un cambio de página programático
+  // (foco desde el detalle, sync por filtros) pise una cámara ya animada.
+  late final PageController _pageCtrl;
+  bool _skipNextPageCamera = false;
+
+  // Detección automática de "jugando" (radio 40m, 5 min de permanencia).
+  PlaySessionService? _play;
 
   Court? get _court => _filtered.isEmpty
       ? null
@@ -99,6 +117,9 @@ class _HomeScreenState extends State<HomeScreen>
   // Markers cacheados: solo se recalculan cuando cambian las canchas o el
   // índice seleccionado, no en cada setState (buscar, spinner, etc.).
   Set<Marker> _markers = {};
+
+  // Círculos del radio de detección de "jugando" (40m) alrededor de cada cancha.
+  Set<Circle> _circles = {};
 
   void _applyFilters() {
     final list = widget.courts.where((c) {
@@ -140,6 +161,21 @@ class _HomeScreenState extends State<HomeScreen>
       await _ensureUserPosition();
     }
     setState(_applyFilters);
+    _syncPageToIndex();
+  }
+
+  /// Reposiciona el carrusel al índice actual tras cambios en la lista
+  /// (filtros, orden por cercanía). Se hace post-frame para que el PageView ya
+  /// tenga el nuevo itemCount.
+  void _syncPageToIndex() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pageCtrl.hasClients || _filtered.isEmpty) return;
+      final target = _index.clamp(0, _filtered.length - 1);
+      if (_pageCtrl.page?.round() != target) {
+        _skipNextPageCamera = true;
+        _pageCtrl.jumpToPage(target);
+      }
+    });
   }
 
   Future<void> _ensureUserPosition() async {
@@ -176,6 +212,7 @@ class _HomeScreenState extends State<HomeScreen>
         _userPos = pos;
         _applyFilters();
       });
+      _syncPageToIndex();
       _updateUserScreenPos();
     } catch (_) {}
   }
@@ -194,8 +231,17 @@ class _HomeScreenState extends State<HomeScreen>
       final idx = _filtered.indexWhere((c) => c.id == fid);
       if (idx >= 0) _index = idx;
     }
+    _pageCtrl = PageController(initialPage: _index);
     _rebuildMarkers();
     _loadInitialPosition();
+    // Arranca la detección automática de partido en curso y propaga la
+    // presencia "Jugando" a Notion (respetando los permisos del usuario).
+    final session = context.read<Session>();
+    _play = context.read<PlaySessionService>()..setCourts(widget.courts);
+    _play!.onPresenceChanged = (playing, courtId, since) {
+      session.setPresence(playing: playing, courtId: courtId, since: since);
+    };
+    _play!.startTracking();
   }
 
   @override
@@ -204,6 +250,8 @@ class _HomeScreenState extends State<HomeScreen>
     if (!identical(old.courts, widget.courts) ||
         old.courts.length != widget.courts.length) {
       _applyFilters();
+      _syncPageToIndex();
+      _play?.setCourts(widget.courts);
     }
     final fid = widget.focusCourtId;
     if (fid != null && fid != old.focusCourtId) {
@@ -220,7 +268,18 @@ class _HomeScreenState extends State<HomeScreen>
           icon: BitmapDescriptor.defaultMarkerWithHue(
             i == _index ? 22.0 : BitmapDescriptor.hueAzure,
           ),
-          onTap: () => _onSelectIndex(i),
+          onTap: () => _selectIndex(i),
+        ),
+    };
+    _circles = {
+      for (var i = 0; i < _filtered.length; i++)
+        Circle(
+          circleId: CircleId('radius_${_filtered[i].id}'),
+          center: LatLng(_filtered[i].lat, _filtered[i].lng),
+          radius: PlaySessionService.radiusMeters,
+          fillColor: AppColors.accent.withAlpha(i == _index ? 46 : 18),
+          strokeColor: AppColors.accent.withAlpha(i == _index ? 170 : 80),
+          strokeWidth: 1,
         ),
     };
   }
@@ -228,10 +287,17 @@ class _HomeScreenState extends State<HomeScreen>
   void _focusOnCourt(String courtId) {
     final idx = _filtered.indexWhere((c) => c.id == courtId);
     if (idx >= 0) {
-      setState(() {
-        _index = idx;
-        _rebuildMarkers();
-      });
+      // Movemos el carrusel sin que su cámara (zoom default) pise el zoom 16
+      // que queremos al enfocar desde el detalle.
+      if (idx != _index && _pageCtrl.hasClients) {
+        _skipNextPageCamera = true;
+        _pageCtrl.jumpToPage(idx);
+      } else {
+        setState(() {
+          _index = idx;
+          _rebuildMarkers();
+        });
+      }
       final c = _filtered[idx];
       _mapCtrl?.animateCamera(
         CameraUpdate.newLatLngZoom(LatLng(c.lat, c.lng), 16),
@@ -245,6 +311,9 @@ class _HomeScreenState extends State<HomeScreen>
     _pulseCtrl.dispose();
     _mapCtrl?.dispose();
     _searchCtrl.dispose();
+    _userScreen.dispose();
+    _pageCtrl.dispose();
+    _play?.stopTracking();
     super.dispose();
   }
 
@@ -254,24 +323,49 @@ class _HomeScreenState extends State<HomeScreen>
     final ctrl = _mapCtrl;
     final pos = _userPos;
     if (ctrl == null || pos == null) {
-      if (_userScreen != null && mounted) setState(() => _userScreen = null);
+      _userScreen.value = null;
       return;
     }
+    if (_resolvingScreenPos) return;
+    _resolvingScreenPos = true;
     try {
       final sc = await ctrl.getScreenCoordinate(
         LatLng(pos.latitude, pos.longitude),
       );
       if (!mounted) return;
       final ratio = MediaQuery.of(context).devicePixelRatio;
-      setState(() => _userScreen = Offset(sc.x / ratio, sc.y / ratio));
-    } catch (_) {}
+      _userScreen.value = Offset(sc.x / ratio, sc.y / ratio);
+    } catch (_) {
+    } finally {
+      _resolvingScreenPos = false;
+    }
   }
 
-  void _onSelectIndex(int i) {
+  /// Selección externa (tap en marker, flechas): anima el carrusel a la página
+  /// i; el resto (índice, markers, cámara) lo resuelve _onPageChanged.
+  void _selectIndex(int i) {
+    if (!_pageCtrl.hasClients) {
+      _onPageChanged(i);
+      return;
+    }
+    _pageCtrl.animateToPage(
+      i,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  /// Se dispara cuando el PageView asienta una página (arrastre con el dedo o
+  /// animación programática). Actualiza índice, markers y centra la cámara.
+  void _onPageChanged(int i) {
     setState(() {
       _index = i;
       _rebuildMarkers();
     });
+    if (_skipNextPageCamera) {
+      _skipNextPageCamera = false;
+      return;
+    }
     _mapCtrl?.animateCamera(
       CameraUpdate.newLatLng(LatLng(_filtered[i].lat, _filtered[i].lng)),
     );
@@ -355,6 +449,7 @@ class _HomeScreenState extends State<HomeScreen>
               zoom: 12,
             ),
             markers: _markers,
+            circles: _circles,
             zoomControlsEnabled: false,
             myLocationButtonEnabled: false,
             compassEnabled: false,
@@ -380,11 +475,13 @@ class _HomeScreenState extends State<HomeScreen>
               top: 112,
               left: 0,
               right: 0,
-              child: _quickChips(),
+              child: context.watch<PlaySessionService>().isPlaying
+                  ? _playingBanner(context)
+                  : _quickChips(),
             ),
           Positioned(
             right: 16,
-            bottom: 260,
+            bottom: 312,
             child: _locateBtn(),
           ),
           Positioned(
@@ -501,6 +598,50 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  Widget _playingBanner(BuildContext context) {
+    final ps = context.watch<PlaySessionService>();
+    final s = ps.elapsedSeconds;
+    final mm = (s ~/ 60).toString().padLeft(2, '0');
+    final ss = (s % 60).toString().padLeft(2, '0');
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: const Color(0xF211181F),
+          borderRadius: BorderRadius.circular(100),
+          border: Border.all(color: AppColors.open.withAlpha(120)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                color: AppColors.open,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Jugando en ${ps.courtName ?? ''}',
+              style: AppText.grotesk(size: 12, weight: FontWeight.w600),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '$mm:$ss',
+              style: AppText.archivo(
+                size: 13,
+                weight: FontWeight.w800,
+                color: AppColors.open,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _quickChips() {
     const labels = ['Cerca', 'Abierto ahora', 'Iluminada', 'Gratis', 'Interior'];
     return SizedBox(
@@ -555,26 +696,33 @@ class _HomeScreenState extends State<HomeScreen>
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
       );
+      if (!mounted) return;
+      // Sin esto el indicador de ubicación nunca se dibuja: el punto se ancla a
+      // _userPos y se reposiciona vía _updateUserScreenPos.
+      _userPos = pos;
       await _mapCtrl?.animateCamera(
         CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 15),
       );
+      _updateUserScreenPos();
     } finally {
       if (mounted) setState(() => _locating = false);
     }
   }
 
   Widget _userLocationDot() {
-    final p = _userScreen;
-    if (p == null) return const SizedBox.shrink();
-    const box = 96.0;
-    return Positioned(
-      left: p.dx - box / 2,
-      top: p.dy - box / 2,
-      width: box,
-      height: box,
-      child: IgnorePointer(
-        child: Center(
-          child: AnimatedBuilder(
+    return ValueListenableBuilder<Offset?>(
+      valueListenable: _userScreen,
+      builder: (context, p, _) {
+        if (p == null) return const SizedBox.shrink();
+        const box = 96.0;
+        return Positioned(
+          left: p.dx - box / 2,
+          top: p.dy - box / 2,
+          width: box,
+          height: box,
+          child: IgnorePointer(
+            child: Center(
+              child: AnimatedBuilder(
             animation: _pulseCtrl,
             builder: (context, child) {
               final t = _pulseCtrl.value;
@@ -614,6 +762,8 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
       ),
+        );
+      },
     );
   }
 
@@ -647,16 +797,31 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  void _goPrev() =>
+      _selectIndex((_index - 1 + _filtered.length) % _filtered.length);
+  void _goNext() => _selectIndex((_index + 1) % _filtered.length);
+
   Widget _bottomSwipe() {
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: _CourtSwipeCard(
-            court: _court!,
-            onSelect: () => widget.onSelectCourt?.call(_court!.id),
-            onPrev: () => _onSelectIndex((_index - 1 + _filtered.length) % _filtered.length),
-            onNext: () => _onSelectIndex((_index + 1) % _filtered.length),
+        // Carrusel: se arrastra con el dedo y hace snap. clipBehavior.none deja
+        // ver la sombra del card (queda fuera del alto fijo del PageView).
+        SizedBox(
+          height: 138,
+          child: PageView.builder(
+            controller: _pageCtrl,
+            onPageChanged: _onPageChanged,
+            clipBehavior: Clip.none,
+            itemCount: _filtered.length,
+            itemBuilder: (context, i) => Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: _CourtSwipeCard(
+                court: _filtered[i],
+                onSelect: () => widget.onSelectCourt?.call(_filtered[i].id),
+                onPrev: _goPrev,
+                onNext: _goNext,
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 10),
@@ -688,29 +853,27 @@ class _HomeScreenState extends State<HomeScreen>
     double radius = 14,
     EdgeInsetsGeometry? padding,
   }) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          width: width,
-          height: height,
-          padding: padding,
-          decoration: BoxDecoration(
-            color: const Color(0xE011181F),
-            borderRadius: BorderRadius.circular(radius),
-            border: Border.all(color: AppColors.white(0.1)),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.black(0.3),
-                blurRadius: 24,
-                offset: const Offset(0, 8),
-              ),
-            ],
+    // Sin BackdropFilter a propósito: el blur sobre el mapa (platform view) se
+    // recalcula en cada frame al deslizar y tira los FPS. El fondo ya es casi
+    // opaco, así que un sólido translúcido se ve prácticamente igual.
+    return Container(
+      width: width,
+      height: height,
+      padding: padding,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: const Color(0xF211181F),
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: AppColors.white(0.1)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.black(0.3),
+            blurRadius: 24,
+            offset: const Offset(0, 8),
           ),
-          child: child,
-        ),
+        ],
       ),
+      child: child,
     );
   }
 }
@@ -730,14 +893,20 @@ class _CourtSwipeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-        child: Container(
+    // Handle + clan vigentes del proponente (en vivo desde Perfiles).
+    final session = context.watch<Session>();
+    final proposer = context.watch<ProfilesProvider>().resolveProposer(
+          court,
+          sessionProfile: session.profile,
+          sessionEmail: session.email,
+        );
+    // Sin BackdropFilter: el blur sobre el mapa en movimiento recalcula por
+    // frame y baja los FPS. El fondo ya es casi opaco; lo subimos a opaco.
+    return Container(
           padding: const EdgeInsets.all(14),
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
-            color: const Color(0xEB11181F),
+            color: const Color(0xF211181F),
             borderRadius: BorderRadius.circular(24),
             border: Border.all(color: AppColors.white(0.1)),
             boxShadow: [
@@ -749,77 +918,38 @@ class _CourtSwipeCard extends StatelessWidget {
             ],
           ),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Stack(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: Image.network(
-                      court.img,
-                      width: 96,
-                      height: 96,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stack) => Container(
-                        width: 96,
-                        height: 96,
-                        color: AppColors.bgElev,
-                      ),
+              SizedBox(
+                width: 96,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    CourtImage(
+                      url: court.img,
+                      borderRadius: BorderRadius.circular(16),
                     ),
-                  ),
-                  Positioned(
-                    top: 6,
-                    left: 6,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: AppColors.black(0.75),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        court.dist.toUpperCase(),
-                        style: AppText.grotesk(
-                          size: 9,
-                          weight: FontWeight.w700,
-                          letterSpacing: 0.06,
-                        ),
-                      ),
-                    ),
-                  ),
-                  // Handle de quien propuso la cancha (incentiva el aporte).
-                  if (court.proposedBy.isNotEmpty)
                     Positioned(
-                      bottom: 6,
+                      top: 6,
                       left: 6,
-                      right: 6,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                         decoration: BoxDecoration(
                           color: AppColors.black(0.75),
                           borderRadius: BorderRadius.circular(6),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.add_location_alt_outlined,
-                                size: 9, color: AppColors.accent),
-                            const SizedBox(width: 3),
-                            Flexible(
-                              child: Text(
-                                court.proposedBy,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: AppText.grotesk(
-                                  size: 9,
-                                  weight: FontWeight.w700,
-                                  color: AppColors.accent,
-                                ),
-                              ),
-                            ),
-                          ],
+                        child: Text(
+                          court.dist.toUpperCase(),
+                          style: AppText.grotesk(
+                            size: 9,
+                            weight: FontWeight.w700,
+                            letterSpacing: 0.06,
+                          ),
                         ),
                       ),
                     ),
-                ],
+                  ],
+                ),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -834,7 +964,6 @@ class _CourtSwipeCard extends StatelessWidget {
                         RatingBadge(value: court.rating, size: 11),
                       ],
                     ),
-                    const SizedBox(height: 4),
                     Text(
                       court.name,
                       style: AppText.archivo(size: 18, weight: FontWeight.w800),
@@ -847,7 +976,38 @@ class _CourtSwipeCard extends StatelessWidget {
                         color: AppColors.white(0.55),
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    // Quién propuso la cancha: handle completo (clan opcional).
+                    if (proposer.handle.isNotEmpty)
+                      Row(
+                        children: [
+                          Icon(Icons.add_location_alt_outlined,
+                              size: 11, color: AppColors.accent),
+                          const SizedBox(width: 4),
+                          if (proposer.clan.isNotEmpty) ...[
+                            Text(
+                              '[${proposer.clan}]',
+                              style: AppText.grotesk(
+                                size: 10,
+                                weight: FontWeight.w800,
+                                color: AppColors.accent,
+                              ),
+                            ),
+                            const SizedBox(width: 3),
+                          ],
+                          Flexible(
+                            child: Text(
+                              proposer.handle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: AppText.grotesk(
+                                size: 10,
+                                weight: FontWeight.w700,
+                                color: AppColors.accent,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     Row(
                       children: [
                         Expanded(
@@ -882,8 +1042,6 @@ class _CourtSwipeCard extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
     );
   }
 

@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../data/courts.dart';
+import '../services/profiles_provider.dart';
+import '../services/session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_chip.dart';
+import '../widgets/court_image.dart';
 import '../widgets/rating_badge.dart';
 import '../widgets/status_dot.dart';
 
@@ -121,6 +125,13 @@ class _CourtListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Handle + clan vigentes del proponente (en vivo desde Perfiles).
+    final session = context.watch<Session>();
+    final proposer = context.watch<ProfilesProvider>().resolveProposer(
+          court,
+          sessionProfile: session.profile,
+          sessionEmail: session.email,
+        );
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -133,20 +144,13 @@ class _CourtListItem extends StatelessWidget {
           children: [
             Stack(
               children: [
-                ClipRRect(
+                CourtImage(
+                  url: court.img,
+                  height: 140,
+                  width: double.infinity,
                   borderRadius: const BorderRadius.only(
                     topLeft: Radius.circular(19),
                     topRight: Radius.circular(19),
-                  ),
-                  child: Image.network(
-                    court.img,
-                    height: 140,
-                    width: double.infinity,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => Container(
-                      height: 140,
-                      color: AppColors.bgElev,
-                    ),
                   ),
                 ),
                 Container(
@@ -192,7 +196,7 @@ class _CourtListItem extends StatelessWidget {
                         const SizedBox(width: 5),
                       ],
                       const Spacer(),
-                      if (court.proposedBy.isNotEmpty)
+                      if (proposer.handle.isNotEmpty)
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                           decoration: BoxDecoration(
@@ -206,8 +210,19 @@ class _CourtListItem extends StatelessWidget {
                               Icon(Icons.add_location_alt_outlined,
                                   size: 10, color: AppColors.accent),
                               const SizedBox(width: 4),
+                              if (proposer.clan.isNotEmpty) ...[
+                                Text(
+                                  '[${proposer.clan}]',
+                                  style: AppText.grotesk(
+                                    size: 10,
+                                    weight: FontWeight.w800,
+                                    color: AppColors.accent,
+                                  ),
+                                ),
+                                const SizedBox(width: 3),
+                              ],
                               Text(
-                                court.proposedBy,
+                                proposer.handle,
                                 style: AppText.grotesk(
                                   size: 10,
                                   weight: FontWeight.w700,

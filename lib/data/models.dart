@@ -42,6 +42,25 @@ class Profile {
   final int streak;
   final double rating;
   final String userEmail;
+  // Insignia de clan (hasta 4 caracteres) y colores del avatar (hex de 6
+  // dígitos, sin '#'). avatarColor = fondo, clanTextColor = letras.
+  // Vacíos = avatar por defecto (inicial, fondo naranja, texto blanco).
+  final String clan;
+  final String avatarColor;
+  final String clanTextColor;
+  // Familia tipográfica del clan (nombre de Google Fonts). Vacío = default.
+  final String clanFont;
+  // Título equipado (se desbloquea con logros). Visible para los amigos.
+  final String title;
+
+  // Privacidad: qué comparte el usuario con sus amigos / en las canchas.
+  final bool shareStatus; // mostrar "Jugando" a los amigos
+  final bool shareCourt; // mostrar en qué cancha está jugando
+  final bool shareTime; // mostrar cuánto tiempo lleva jugando
+  // Presencia actual (se actualiza al empezar/terminar un partido).
+  final bool playing;
+  final String playingCourtId;
+  final String playingSince; // ISO8601, '' si no está jugando
 
   const Profile({
     this.pageId = '',
@@ -59,6 +78,17 @@ class Profile {
     this.streak = 0,
     this.rating = 0,
     this.userEmail = '',
+    this.clan = '',
+    this.avatarColor = '',
+    this.clanTextColor = '',
+    this.clanFont = '',
+    this.title = '',
+    this.shareStatus = false,
+    this.shareCourt = false,
+    this.shareTime = false,
+    this.playing = false,
+    this.playingCourtId = '',
+    this.playingSince = '',
   });
 
   /// Texto compuesto "Base · 1.82m" para mostrar en el perfil.
@@ -87,6 +117,17 @@ class Profile {
       streak: NotionService.readInt(p, 'Streak'),
       rating: NotionService.readNumber(p, 'Rating'),
       userEmail: NotionService.readText(p, 'UserEmail'),
+      clan: NotionService.readText(p, 'Clan'),
+      avatarColor: NotionService.readText(p, 'AvatarColor'),
+      clanTextColor: NotionService.readText(p, 'ClanTextColor'),
+      clanFont: NotionService.readText(p, 'ClanFont'),
+      title: NotionService.readText(p, 'EquippedTitle'),
+      shareStatus: NotionService.readCheckbox(p, 'ShareStatus'),
+      shareCourt: NotionService.readCheckbox(p, 'ShareCourt'),
+      shareTime: NotionService.readCheckbox(p, 'ShareTime'),
+      playing: NotionService.readCheckbox(p, 'Playing'),
+      playingCourtId: NotionService.readText(p, 'PlayingCourtId'),
+      playingSince: NotionService.readDate(p, 'PlayingSince') ?? '',
     );
   }
 
@@ -106,6 +147,18 @@ class Profile {
       'Streak': NotionService.number(streak),
       'Rating': NotionService.number(rating),
       'UserEmail': NotionService.richText(userEmail),
+      'Clan': NotionService.richText(clan),
+      'AvatarColor': NotionService.richText(avatarColor),
+      'ClanTextColor': NotionService.richText(clanTextColor),
+      'ClanFont': NotionService.richText(clanFont),
+      'EquippedTitle': NotionService.richText(title),
+      'ShareStatus': NotionService.checkbox(shareStatus),
+      'ShareCourt': NotionService.checkbox(shareCourt),
+      'ShareTime': NotionService.checkbox(shareTime),
+      'Playing': NotionService.checkbox(playing),
+      'PlayingCourtId': NotionService.richText(playingCourtId),
+      'PlayingSince':
+          NotionService.date(playingSince.isEmpty ? null : playingSince),
     };
   }
 
@@ -117,6 +170,17 @@ class Profile {
     String? position,
     double? height,
     String? avatar,
+    String? clan,
+    String? avatarColor,
+    String? clanTextColor,
+    String? clanFont,
+    String? title,
+    bool? shareStatus,
+    bool? shareCourt,
+    bool? shareTime,
+    bool? playing,
+    String? playingCourtId,
+    String? playingSince,
   }) {
     return Profile(
       pageId: pageId,
@@ -134,6 +198,17 @@ class Profile {
       streak: streak,
       rating: rating,
       userEmail: userEmail,
+      clan: clan ?? this.clan,
+      avatarColor: avatarColor ?? this.avatarColor,
+      clanTextColor: clanTextColor ?? this.clanTextColor,
+      clanFont: clanFont ?? this.clanFont,
+      title: title ?? this.title,
+      shareStatus: shareStatus ?? this.shareStatus,
+      shareCourt: shareCourt ?? this.shareCourt,
+      shareTime: shareTime ?? this.shareTime,
+      playing: playing ?? this.playing,
+      playingCourtId: playingCourtId ?? this.playingCourtId,
+      playingSince: playingSince ?? this.playingSince,
     );
   }
 
@@ -154,6 +229,17 @@ class Profile {
         'streak': streak,
         'rating': rating,
         'userEmail': userEmail,
+        'clan': clan,
+        'avatarColor': avatarColor,
+        'clanTextColor': clanTextColor,
+        'clanFont': clanFont,
+        'title': title,
+        'shareStatus': shareStatus,
+        'shareCourt': shareCourt,
+        'shareTime': shareTime,
+        'playing': playing,
+        'playingCourtId': playingCourtId,
+        'playingSince': playingSince,
       };
 
   factory Profile.fromJson(Map<String, dynamic> j) => Profile(
@@ -172,6 +258,17 @@ class Profile {
         streak: (j['streak'] ?? 0).toInt(),
         rating: (j['rating'] ?? 0).toDouble(),
         userEmail: j['userEmail'] ?? '',
+        clan: j['clan'] ?? '',
+        avatarColor: j['avatarColor'] ?? '',
+        clanTextColor: j['clanTextColor'] ?? '',
+        clanFont: j['clanFont'] ?? '',
+        title: j['title'] ?? '',
+        shareStatus: j['shareStatus'] ?? false,
+        shareCourt: j['shareCourt'] ?? false,
+        shareTime: j['shareTime'] ?? false,
+        playing: j['playing'] ?? false,
+        playingCourtId: j['playingCourtId'] ?? '',
+        playingSince: j['playingSince'] ?? '',
       );
 }
 

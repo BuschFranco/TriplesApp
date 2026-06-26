@@ -73,6 +73,28 @@ class NotionService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  /// Asegura que una database tenga ciertas propiedades (mapa nombre -> tipo,
+  /// ej. 'rich_text' | 'checkbox' | 'date' | 'number'). Es idempotente: Notion
+  /// fusiona el schema, así que reenviar una propiedad existente del mismo tipo
+  /// no la altera. Requiere capacidad de "actualizar contenido" en la
+  /// integración. Si falla (p.ej. permisos), lanza.
+  Future<void> ensureProperties(
+    String databaseId,
+    Map<String, String> nameToType,
+  ) async {
+    if (nameToType.isEmpty) return;
+    final res = await http.patch(
+      Uri.parse('$_base/databases/$databaseId'),
+      headers: _headers,
+      body: jsonEncode({
+        'properties': {
+          for (final e in nameToType.entries) e.key: {e.value: {}},
+        }
+      }),
+    );
+    _ensureOk(res, 'ensureProperties');
+  }
+
   /// Archiva (borra) una página.
   Future<void> archivePage(String pageId) async {
     final res = await http.patch(

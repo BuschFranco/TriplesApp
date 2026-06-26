@@ -47,11 +47,18 @@ class CourtsProvider extends ChangeNotifier {
 
   /// Crea una cancha en Notion en estado "Sin definir" (pendiente de
   /// moderación). No aparece en la app hasta que se apruebe en Notion.
-  Future<void> addCourt(Court court, {String? createdBy}) async {
+  Future<void> addCourt(
+    Court court, {
+    String? createdBy,
+    String? createdByClan,
+    String? createdByEmail,
+  }) async {
     await _notion.createPage(
       NotionConfig.dbCourts,
       court.toNotionProperties(
         createdBy: createdBy,
+        createdByClan: createdByClan,
+        createdByEmail: createdByEmail,
         approval: CourtApproval.pending,
       ),
     );
