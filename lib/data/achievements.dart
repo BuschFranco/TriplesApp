@@ -3,6 +3,27 @@ import 'package:flutter/material.dart';
 /// Color dorado para logros/títulos desbloqueados.
 const Color kGold = Color(0xFFE9B949);
 
+/// Nivel de rareza de un título. Define su color al mostrarse.
+enum TitleRarity { comun, raro, epico, legendario }
+
+extension TitleRarityX on TitleRarity {
+  /// Color asociado a la rareza (verde común, azul raro, violeta épico,
+  /// dorado legendario).
+  Color get color => switch (this) {
+        TitleRarity.comun => const Color(0xFF4ADE80), // verde
+        TitleRarity.raro => const Color(0xFF3B82F6), // azul
+        TitleRarity.epico => const Color(0xFFA855F7), // violeta
+        TitleRarity.legendario => kGold, // dorado
+      };
+
+  String get label => switch (this) {
+        TitleRarity.comun => 'Común',
+        TitleRarity.raro => 'Raro',
+        TitleRarity.epico => 'Épico',
+        TitleRarity.legendario => 'Legendario',
+      };
+}
+
 /// Niveles numéricos, infinitos. Curva creciente: cada nivel cuesta más que el
 /// anterior, así subir se vuelve progresivamente más difícil.
 ///
@@ -251,14 +272,23 @@ Achievement? achievementById(String id) {
 class GameTitle {
   final String name;
   final List<String> requires; // ids de logros requeridos
+  final TitleRarity rarity;
 
-  const GameTitle(this.name, this.requires);
+  const GameTitle(this.name, this.requires,
+      {this.rarity = TitleRarity.comun});
 
   bool unlocked(PlayStats s) =>
       requires.every((id) => achievementById(id)?.unlocked(s) ?? false);
 
+  /// True si el título no requiere ningún logro: viene desbloqueado de base.
+  bool get isBase => requires.isEmpty;
+
+  /// Color del título según su rareza.
+  Color get color => rarity.color;
+
   /// Texto "Se desbloquea al conseguir el logro X" / "los logros X, Y y Z".
   String get unlockDesc {
+    if (requires.isEmpty) return 'Disponible desde el inicio.';
     final names = requires
         .map((id) => achievementById(id)?.name ?? id)
         .map((n) => '"$n"')
@@ -271,25 +301,45 @@ class GameTitle {
   }
 }
 
-/// Catálogo de títulos. Algunos requieren un logro; otros, varios.
+/// Catálogo de títulos. Los primeros vienen desbloqueados de base (sin logros
+/// requeridos); el resto requiere uno o varios logros.
 const List<GameTitle> kTitles = [
-  GameTitle('Veterano de la cancha', ['play_50']),
-  GameTitle('Leyenda viviente', ['play_100']),
-  GameTitle('Trotamundos', ['courts_20']),
-  GameTitle('Coleccionista de canchas', ['courts_50']),
-  GameTitle('Campeón', ['wins_50']),
-  GameTitle('Imparable', ['streak_5']),
-  GameTitle('Invencible', ['streak_10']),
-  GameTitle('Maratonista', ['hours_10']),
-  // Títulos que requieren varios logros:
-  GameTitle('Maestro del juego', ['play_100', 'wins_50']),
-  GameTitle('Crack total', ['courts_50', 'hours_50', 'streak_10']),
-  // Apodos estilo NBA:
-  GameTitle('Rookie del año', ['wins_year_10']),
-  GameTitle('El Profe', ['train_10']),
-  GameTitle('Rata de gimnasio', ['train_30']),
-  GameTitle('MVP', ['wins_100']),
-  GameTitle('Iron Man', ['play_200']),
-  GameTitle('La Mamba Negra', ['streak_10', 'wins_50']),
-  GameTitle('El Elegido', ['play_100', 'wins_100']),
+  // Comunes (verde): desbloqueados de base, sin requisitos.
+  GameTitle('Baller', [], rarity: TitleRarity.comun),
+  GameTitle('Pibe de barrio', [], rarity: TitleRarity.comun),
+  GameTitle('Promesa', [], rarity: TitleRarity.comun),
+  GameTitle('Fierita', [], rarity: TitleRarity.comun),
+  // Raros (azul): un logro de dificultad media.
+  GameTitle('Veterano de la cancha', ['play_50'], rarity: TitleRarity.raro),
+  GameTitle('Trotamundos', ['courts_20'], rarity: TitleRarity.raro),
+  GameTitle('Imparable', ['streak_5'], rarity: TitleRarity.raro),
+  GameTitle('Maratonista', ['hours_10'], rarity: TitleRarity.raro),
+  GameTitle('Rookie del año', ['wins_year_10'], rarity: TitleRarity.raro),
+  GameTitle('El Profe', ['train_10'], rarity: TitleRarity.raro),
+  // Épicos (violeta): un logro exigente.
+  GameTitle('Leyenda viviente', ['play_100'], rarity: TitleRarity.epico),
+  GameTitle('Coleccionista de canchas', ['courts_50'],
+      rarity: TitleRarity.epico),
+  GameTitle('Campeón', ['wins_50'], rarity: TitleRarity.epico),
+  GameTitle('Invencible', ['streak_10'], rarity: TitleRarity.epico),
+  GameTitle('Rata de gimnasio', ['train_30'], rarity: TitleRarity.epico),
+  // Legendarios (dorado): varios logros o las metas más altas.
+  GameTitle('Maestro del juego', ['play_100', 'wins_50'],
+      rarity: TitleRarity.legendario),
+  GameTitle('Crack total', ['courts_50', 'hours_50', 'streak_10'],
+      rarity: TitleRarity.legendario),
+  GameTitle('MVP', ['wins_100'], rarity: TitleRarity.legendario),
+  GameTitle('Iron Man', ['play_200'], rarity: TitleRarity.legendario),
+  GameTitle('La Mamba Negra', ['streak_10', 'wins_50'],
+      rarity: TitleRarity.legendario),
+  GameTitle('El Elegido', ['play_100', 'wins_100'],
+      rarity: TitleRarity.legendario),
 ];
+
+/// Busca un título por su nombre (para resolver su rareza/color al mostrarlo).
+GameTitle? titleByName(String name) {
+  for (final t in kTitles) {
+    if (t.name == name) return t;
+  }
+  return null;
+}

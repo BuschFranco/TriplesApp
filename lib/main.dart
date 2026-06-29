@@ -16,6 +16,7 @@ import 'services/notion_service.dart';
 import 'services/play_session_service.dart';
 import 'services/profiles_provider.dart';
 import 'services/session.dart';
+import 'services/sync_coordinator.dart';
 import 'theme/app_theme.dart';
 import 'widgets/bball_glyph.dart';
 
@@ -37,7 +38,7 @@ void main() async {
   // sin bloquear el arranque: si falla por permisos, la app sigue funcionando.
   unawaited(_ensureNotionSchema());
 
-  runApp(const TriplesApp());
+  runApp(const OneOfOneApp());
 }
 
 /// Garantiza el schema de Notion necesario para clan/color y autor de cancha.
@@ -71,8 +72,8 @@ Future<void> _ensureNotionSchema() async {
   }
 }
 
-class TriplesApp extends StatelessWidget {
-  const TriplesApp({super.key});
+class OneOfOneApp extends StatelessWidget {
+  const OneOfOneApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -83,9 +84,21 @@ class TriplesApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => FavoritesProvider()..load()),
         ChangeNotifierProvider(create: (_) => ProfilesProvider()..load()),
         ChangeNotifierProvider(create: (_) => PlaySessionService()),
+        // Pegamento de sincronización (presencia, batch, sembrado). Se crea de
+        // forma temprana (lazy: false) para cablear los callbacks ni bien
+        // arranca la app, sin depender de que se monte ninguna pantalla.
+        Provider<SyncCoordinator>(
+          lazy: false,
+          create: (ctx) => SyncCoordinator(
+            session: ctx.read<Session>(),
+            play: ctx.read<PlaySessionService>(),
+            courts: ctx.read<CourtsProvider>(),
+          ),
+          dispose: (_, c) => c.dispose(),
+        ),
       ],
       child: MaterialApp(
-        title: 'Triples',
+        title: '1of1',
         debugShowCheckedModeBanner: false,
         theme: buildAppTheme(),
         home: const _Root(),

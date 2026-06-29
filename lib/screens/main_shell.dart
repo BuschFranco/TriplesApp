@@ -5,6 +5,7 @@ import '../services/play_session_service.dart';
 import '../services/profiles_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_tab_bar.dart';
+import '../widgets/reward_banner.dart';
 import 'crew_screen.dart';
 import 'create_screen.dart';
 import 'detail_screen.dart';
@@ -22,6 +23,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   AppTab _tab = AppTab.home;
+
   String? _detailCourtId;
   bool _filtersOpen = false;
   bool _resultPromptOpen = false;
@@ -252,6 +254,18 @@ class _MainShellState extends State<MainShell> {
               bottom: 16 + bottomInset,
               child: AppTabBar(active: _tab, onChange: _selectTab),
             ),
+          // Banner de recompensas (logro/título/nivel) por encima de todo.
+          // Va dentro de un Positioned para no alterar el tamaño del Stack.
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: RewardOverlay(
+              rewards: context.watch<PlaySessionService>().rewards,
+              onConsume: () =>
+                  context.read<PlaySessionService>().acknowledgeReward(),
+            ),
+          ),
         ],
       ),
     );

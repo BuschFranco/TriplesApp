@@ -107,9 +107,6 @@ class _HomeScreenState extends State<HomeScreen>
   late final PageController _pageCtrl;
   bool _skipNextPageCamera = false;
 
-  // Detección automática de "jugando" (radio 40m, 5 min de permanencia).
-  PlaySessionService? _play;
-
   Court? get _court => _filtered.isEmpty
       ? null
       : _filtered[_index.clamp(0, _filtered.length - 1)];
@@ -234,15 +231,8 @@ class _HomeScreenState extends State<HomeScreen>
     _pageCtrl = PageController(initialPage: _index);
     _rebuildMarkers();
     _loadInitialPosition();
-    // Arranca la detección automática de partido en curso y propaga la
-    // presencia "Jugando" a Notion (respetando los permisos del usuario).
-    final session = context.read<Session>();
-    _play = context.read<PlaySessionService>()..setCourts(widget.courts);
-    _play!.onPresenceChanged = (playing, courtId, since) {
-      session.setPresence(playing: playing, courtId: courtId, since: since);
-    };
-    _play!.onLevelChanged = (level) => session.setLevel(level.toString());
-    _play!.startTracking();
+    // La detección de partidos (presencia, batch, sembrado y canchas) la cablea
+    // SyncCoordinator al arrancar la app; HomeScreen ya no orquesta nada de eso.
   }
 
   @override
@@ -252,7 +242,6 @@ class _HomeScreenState extends State<HomeScreen>
         old.courts.length != widget.courts.length) {
       _applyFilters();
       _syncPageToIndex();
-      _play?.setCourts(widget.courts);
     }
     final fid = widget.focusCourtId;
     if (fid != null && fid != old.focusCourtId) {
@@ -314,7 +303,6 @@ class _HomeScreenState extends State<HomeScreen>
     _searchCtrl.dispose();
     _userScreen.dispose();
     _pageCtrl.dispose();
-    _play?.stopTracking();
     super.dispose();
   }
 

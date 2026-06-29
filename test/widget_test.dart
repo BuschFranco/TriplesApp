@@ -3,7 +3,7 @@ import 'package:triplesapp/main.dart';
 
 void main() {
   testWidgets('App builds', (WidgetTester tester) async {
-    await tester.pumpWidget(const TriplesApp());
+    await tester.pumpWidget(const OneOfOneApp());
     await tester.pump();
   });
 }

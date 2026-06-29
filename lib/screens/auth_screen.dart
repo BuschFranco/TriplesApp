@@ -20,11 +20,13 @@ class _AuthScreenState extends State<AuthScreen> {
   final _nameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
+  final _pass2Ctrl = TextEditingController();
   final _cityCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
 
   bool _loading = false;
   bool _obscurePass = true;
+  bool _keepLoggedIn = true; // "Mantener sesión abierta": marcado por defecto.
   String? _error;
 
   @override
@@ -32,6 +34,7 @@ class _AuthScreenState extends State<AuthScreen> {
     _nameCtrl.dispose();
     _emailCtrl.dispose();
     _passCtrl.dispose();
+    _pass2Ctrl.dispose();
     _cityCtrl.dispose();
     _phoneCtrl.dispose();
     super.dispose();
@@ -39,7 +42,23 @@ class _AuthScreenState extends State<AuthScreen> {
 
   bool get _isSignup => _mode == AuthMode.signup;
 
+  // Email bien formado: parte local + dominio con extensión válida (al menos
+  // 2 letras). "user@gmail" o "user@gmail.c" no pasan; "user@gmail.com" sí.
+  static final _emailRe =
+      RegExp(r'^[\w.+-]+@[\w-]+(\.[\w-]+)*\.[a-zA-Z]{2,}$');
+
   Future<void> _submit() async {
+    // Validaciones locales antes de pegarle a la red.
+    final email = _emailCtrl.text.trim();
+    if (!_emailRe.hasMatch(email)) {
+      setState(() => _error = 'Ingresá un email válido (ej. nombre@gmail.com).');
+      return;
+    }
+    if (_isSignup && _passCtrl.text != _pass2Ctrl.text) {
+      setState(() => _error = 'Las contraseñas no coinciden.');
+      return;
+    }
+
     setState(() {
       _loading = true;
       _error = null;
@@ -53,7 +72,8 @@ class _AuthScreenState extends State<AuthScreen> {
             city: _cityCtrl.text,
             phone: _phoneCtrl.text,
           )
-        : await session.login(_emailCtrl.text, _passCtrl.text);
+        : await session.login(_emailCtrl.text, _passCtrl.text,
+            persist: _keepLoggedIn);
     if (!mounted) return;
     setState(() {
       _loading = false;
@@ -118,12 +138,19 @@ class _AuthScreenState extends State<AuthScreen> {
                   _field(_passCtrl, 'Mínimo 6 caracteres', isPassword: true),
                   if (_isSignup) ...[
                     const SizedBox(height: 16),
+                    _label('Confirmar contraseña'),
+                    _field(_pass2Ctrl, 'Repetí tu contraseña', isPassword: true),
+                    const SizedBox(height: 16),
                     _label('Ciudad (opcional)'),
                     _field(_cityCtrl, 'Ej. Buenos Aires'),
                     const SizedBox(height: 16),
                     _label('Teléfono (opcional)'),
                     _field(_phoneCtrl, '+54 11 ...',
                         keyboard: TextInputType.phone),
+                  ],
+                  if (!_isSignup) ...[
+                    const SizedBox(height: 14),
+                    _keepLoggedInRow(),
                   ],
                   if (_error != null) ...[
                     const SizedBox(height: 16),
@@ -163,9 +190,9 @@ class _AuthScreenState extends State<AuthScreen> {
           text: TextSpan(
             style: AppText.archivo(size: 20, weight: FontWeight.w900),
             children: [
-              const TextSpan(text: 'TRIPL'),
-              TextSpan(text: '∆', style: AppText.archivo(size: 20, weight: FontWeight.w900, color: AppColors.accent)),
-              const TextSpan(text: 'S'),
+              const TextSpan(text: '1'),
+              TextSpan(text: 'of', style: AppText.archivo(size: 20, weight: FontWeight.w900, color: AppColors.accent)),
+              const TextSpan(text: '1'),
             ],
           ),
         ),
@@ -285,6 +312,41 @@ class _AuthScreenState extends State<AuthScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _keepLoggedInRow() {
+    return GestureDetector(
+      onTap: _loading
+          ? null
+          : () => setState(() => _keepLoggedIn = !_keepLoggedIn),
+      behavior: HitTestBehavior.opaque,
+      child: Row(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 20,
+            height: 20,
+            decoration: BoxDecoration(
+              color: _keepLoggedIn ? AppColors.accent : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: _keepLoggedIn ? AppColors.accent : AppColors.white(0.3),
+                width: 1.5,
+              ),
+            ),
+            alignment: Alignment.center,
+            child: _keepLoggedIn
+                ? const Icon(Icons.check, size: 14, color: Colors.white)
+                : null,
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Mantener sesión abierta',
+            style: AppText.grotesk(size: 13, color: AppColors.white(0.7)),
+          ),
+        ],
       ),
     );
   }

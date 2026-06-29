@@ -12,6 +12,7 @@ import '../services/play_session_service.dart';
 import '../services/profiles_provider.dart';
 import '../services/session.dart';
 import '../theme/app_theme.dart';
+import 'notifications_screen.dart';
 import '../widgets/app_chip.dart';
 import '../widgets/court_image.dart';
 import '../widgets/rating_badge.dart';
@@ -71,6 +72,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     Row(
                       children: [
+                        _notifButton(context),
+                        const SizedBox(width: 8),
                         if (context.read<Session>().isLoggedIn)
                           GestureDetector(
                             onTap: () => _editPrivacy(context, profile),
@@ -119,6 +122,55 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Botón de campana con badge de notificaciones sin leer. Abre el listado.
+  Widget _notifButton(BuildContext context) {
+    final unread = context.watch<PlaySessionService>().unreadCount;
+    return GestureDetector(
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+      ),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: AppColors.white(0.05),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.white(0.08)),
+            ),
+            child: const Icon(Icons.notifications_outlined,
+                color: Colors.white, size: 18),
+          ),
+          if (unread > 0)
+            Positioned(
+              top: -4,
+              right: -4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                decoration: BoxDecoration(
+                  color: AppColors.accent,
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(color: AppColors.bg, width: 2),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  unread > 9 ? '9+' : '$unread',
+                  style: AppText.grotesk(
+                    size: 9,
+                    weight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -185,27 +237,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       profile.name.isEmpty ? 'Jugador' : profile.name,
                       style: AppText.archivo(size: 24, weight: FontWeight.w900),
                     ),
-                    if (profile.title.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 1),
-                        child: Row(
-                          children: [
-                            Icon(Icons.workspace_premium, size: 13, color: kGold),
-                            const SizedBox(width: 4),
-                            Flexible(
-                              child: Text(
-                                profile.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: AppText.grotesk(
-                                    size: 12,
-                                    weight: FontWeight.w700,
-                                    color: kGold),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
                     const SizedBox(height: 2),
                     Row(
                       children: [
@@ -229,10 +260,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ],
                       ],
                     ),
-                    const SizedBox(height: 6),
-                    AppChip(
-                      label: profile.pos.isEmpty ? 'Baller' : profile.pos,
-                    ),
+                    // Título (coloreado por rareza) y posición (local) como
+                    // chips independientes. Cada uno se muestra solo si existe.
+                    _identityBadges(profile),
                   ],
                 ),
               ),
@@ -262,6 +292,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const Spacer(),
                     Text(
                       profile.clan.isEmpty ? 'Definir' : profile.clan,
+                      style: AppText.grotesk(size: 13, color: AppColors.white(0.5)),
+                    ),
+                    const SizedBox(width: 6),
+                    Icon(Icons.chevron_right, size: 18, color: AppColors.white(0.4)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: GestureDetector(
+              onTap: _editPosition,
+              behavior: HitTestBehavior.opaque,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: AppColors.white(0.05),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.white(0.1)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.sports_basketball_outlined,
+                        size: 18, color: AppColors.accent),
+                    const SizedBox(width: 12),
+                    Text('Posición',
+                        style: AppText.grotesk(size: 14, weight: FontWeight.w600)),
+                    const Spacer(),
+                    Text(
+                      context.watch<Session>().localPosition.isEmpty
+                          ? 'Definir'
+                          : context.watch<Session>().localPosition,
                       style: AppText.grotesk(size: 13, color: AppColors.white(0.5)),
                     ),
                     const SizedBox(width: 6),
@@ -602,6 +666,89 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// Posiciones de básquet seleccionables (local, cosmético).
+  static const List<String> _positions = [
+    'Base',
+    'Escolta',
+    'Alero',
+    'Ala-Pívot',
+    'Pívot',
+  ];
+
+  /// Chips de identidad bajo el nombre: título equipado (color de rareza) y
+  /// posición de juego (local). Cada uno aparece solo si está definido.
+  Widget _identityBadges(Profile profile) {
+    final localPos = context.watch<Session>().localPosition;
+    final hasTitle = profile.title.isNotEmpty;
+    if (!hasTitle && localPos.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: [
+          if (hasTitle)
+            AppChip(
+              label: profile.title,
+              color: titleByName(profile.title)?.color,
+            ),
+          if (localPos.isNotEmpty) AppChip(label: localPos),
+        ],
+      ),
+    );
+  }
+
+  /// Selector de posición (bottom sheet). Guarda la elección en local.
+  void _editPosition() {
+    final current = context.read<Session>().localPosition;
+    Widget row(BuildContext ctx, String label, {bool clear = false}) {
+      final selected = clear ? current.isEmpty : current == label;
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: GestureDetector(
+          onTap: () {
+            context.read<Session>().setLocalPosition(clear ? '' : label);
+            Navigator.pop(ctx);
+          },
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+            decoration: BoxDecoration(
+              color: selected
+                  ? AppColors.accent.withAlpha(30)
+                  : const Color(0x801A2430),
+              border: Border.all(
+                color: selected ? AppColors.accent : AppColors.white(0.08),
+                width: selected ? 1.5 : 1,
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  clear ? Icons.not_interested : Icons.sports_basketball,
+                  size: 18,
+                  color: selected ? AppColors.accent : AppColors.white(0.5),
+                ),
+                const SizedBox(width: 12),
+                Text(clear ? 'Sin posición' : label,
+                    style: AppText.grotesk(size: 14, weight: FontWeight.w600)),
+                const Spacer(),
+                if (selected)
+                  Icon(Icons.check_circle, size: 18, color: AppColors.accent),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    _showSheet('Elegí tu posición', (ctx) => [
+          for (final p in _positions) row(ctx, p),
+          row(ctx, '', clear: true),
+        ]);
+  }
+
   Widget _achievementsSection() {
     final s = _stats();
     const preview = 5;
@@ -633,7 +780,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _achievementRow(Achievement a, PlayStats s) {
-    final unlocked = a.unlocked(s);
+    // Desbloqueado si las stats actuales lo cumplen O si ya quedó registrado en
+    // el set permanente (sobrevive al reinstalar, sembrado desde Notion).
+    final badges = context.watch<PlaySessionService>().unlockedBadges;
+    final unlocked = badges.contains(a.id) || a.unlocked(s);
     final color = unlocked ? kGold : AppColors.white(0.3);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -714,22 +864,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _titleRow(GameTitle t, Profile profile) {
-    final s = _statsOf(context.read<PlaySessionService>());
-    final unlocked = t.unlocked(s);
+    final ps = context.watch<PlaySessionService>();
+    final s = _statsOf(ps);
+    final badges = ps.unlockedBadges;
+    // El título se desbloquea si TODOS sus logros requeridos están conseguidos
+    // (por stats actuales o por el set permanente).
+    final unlocked = t.requires
+        .every((id) => badges.contains(id) || (achievementById(id)?.unlocked(s) ?? false));
     final equipped = profile.title == t.name;
     final loggedIn = context.read<Session>().isLoggedIn;
-    final color = unlocked ? kGold : AppColors.white(0.3);
+    // Desbloqueado: color de su rareza. Bloqueado: gris.
+    final rarity = t.color;
+    final color = unlocked ? rarity : AppColors.white(0.3);
     return GestureDetector(
       onTap: (unlocked && loggedIn) ? () => _toggleTitle(t.name, equipped) : null,
       behavior: HitTestBehavior.opaque,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
-          color: equipped ? kGold.withAlpha(30) : const Color(0x801A2430),
+          color: equipped ? rarity.withAlpha(30) : const Color(0x801A2430),
           border: Border.all(
             color: equipped
-                ? kGold
-                : (unlocked ? kGold.withAlpha(90) : AppColors.white(0.06)),
+                ? rarity
+                : (unlocked ? rarity.withAlpha(90) : AppColors.white(0.06)),
             width: equipped ? 1.5 : 1,
           ),
           borderRadius: BorderRadius.circular(14),
@@ -749,7 +906,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           size: 13, weight: FontWeight.w700, color: color)),
                   const SizedBox(height: 2),
                   Text(
-                    t.unlockDesc,
+                    '${t.rarity.label} · ${t.unlockDesc}',
                     style: AppText.grotesk(size: 11, color: AppColors.white(0.45)),
                   ),
                 ],
@@ -758,11 +915,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             const SizedBox(width: 8),
             if (equipped)
               Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.check_circle, size: 16, color: kGold),
+                Icon(Icons.check_circle, size: 16, color: rarity),
                 const SizedBox(width: 4),
                 Text('Equipado',
                     style: AppText.grotesk(
-                        size: 11, weight: FontWeight.w700, color: kGold)),
+                        size: 11, weight: FontWeight.w700, color: rarity)),
               ])
             else if (unlocked && loggedIn)
               Text('Equipar',
@@ -1451,20 +1608,14 @@ class _FriendsTabState extends State<_FriendsTab> {
                 if (friendTitle.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
-                    child: Row(
-                      children: [
-                        Icon(Icons.workspace_premium, size: 12, color: kGold),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: Text(
-                            friendTitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppText.grotesk(
-                                size: 11, weight: FontWeight.w700, color: kGold),
-                          ),
-                        ),
-                      ],
+                    child: Text(
+                      friendTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.grotesk(
+                          size: 11,
+                          weight: FontWeight.w700,
+                          color: titleByName(friendTitle)?.color ?? kGold),
                     ),
                   ),
                 ?presence,

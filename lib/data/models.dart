@@ -1,4 +1,8 @@
+import 'package:freezed_annotation/freezed_annotation.dart';
 import '../services/notion_service.dart';
+
+part 'models.freezed.dart';
+part 'models.g.dart';
 
 /// Credenciales (base Usuarios). La contraseña se guarda hasheada.
 class AppUser {
@@ -26,73 +30,65 @@ class AppUser {
 }
 
 /// Info pública del jugador (base Perfiles).
-class Profile {
-  final String pageId;
-  final String name;
-  final String handle;
-  final String phone;
-  final String city;
-  final double lat;
-  final double lng;
-  final String avatar;
-  final String position;
-  final double height;
-  final int games;
-  final int courts;
-  final int streak;
-  final double rating;
-  final String userEmail;
-  // Insignia de clan (hasta 4 caracteres) y colores del avatar (hex de 6
-  // dígitos, sin '#'). avatarColor = fondo, clanTextColor = letras.
-  // Vacíos = avatar por defecto (inicial, fondo naranja, texto blanco).
-  final String clan;
-  final String avatarColor;
-  final String clanTextColor;
-  // Familia tipográfica del clan (nombre de Google Fonts). Vacío = default.
-  final String clanFont;
-  // Título equipado (se desbloquea con logros). Visible para los amigos.
-  final String title;
-  // Nivel del jugador (según puntos). Se guarda para que lo vean los amigos.
-  final String level;
+///
+/// Inmutable, con `copyWith`/`==`/`toJson`/`fromJson` generados por freezed +
+/// json_serializable. El mapeo desde/hacia Notion (`fromNotion`/
+/// `toNotionProperties`) se mantiene manual porque usa nombres de propiedad y
+/// lectores propios de Notion que no calzan con la serialización por defecto.
+@freezed
+abstract class Profile with _$Profile {
+  const Profile._();
 
-  // Privacidad: qué comparte el usuario con sus amigos / en las canchas.
-  final bool shareStatus; // mostrar "Jugando" a los amigos
-  final bool shareCourt; // mostrar en qué cancha está jugando
-  final bool shareTime; // mostrar cuánto tiempo lleva jugando
-  // Presencia actual (se actualiza al empezar/terminar un partido).
-  final bool playing;
-  final String playingCourtId;
-  final String playingSince; // ISO8601, '' si no está jugando
+  const factory Profile({
+    @Default('') String pageId,
+    @Default('') String name,
+    @Default('') String handle,
+    @Default('') String phone,
+    @Default('') String city,
+    @Default(0.0) double lat,
+    @Default(0.0) double lng,
+    @Default('') String avatar,
+    @Default('') String position,
+    @Default(0.0) double height,
+    @Default(0) int games,
+    @Default(0) int courts,
+    @Default(0) int streak,
+    // Puntos acumulados (definen el nivel).
+    @Default(0) int points,
+    @Default(0.0) double rating,
+    @Default('') String userEmail,
+    // Insignia de clan (hasta 4 caracteres) y colores del avatar (hex de 6
+    // dígitos, sin '#'). avatarColor = fondo, clanTextColor = letras.
+    // Vacíos = avatar por defecto (inicial, fondo naranja, texto blanco).
+    @Default('') String clan,
+    @Default('') String avatarColor,
+    @Default('') String clanTextColor,
+    // Familia tipográfica del clan (nombre de Google Fonts). Vacío = default.
+    @Default('') String clanFont,
+    // Título equipado (se desbloquea con logros). Visible para los amigos.
+    @Default('') String title,
+    // Nivel del jugador (según puntos). Se guarda para que lo vean los amigos.
+    @Default('') String level,
+    // IDs de logros desbloqueados (insignias permanentes). De acá se derivan
+    // los títulos. Se persisten para que no se pierdan al reinstalar.
+    @Default(<String>[]) List<String> unlockedBadges,
+    // Tiempo jugado total (segundos) y desglose por cancha serializado como
+    // JSON {courtId: {"n": nombre, "s": segundos}}.
+    @Default(0) int playSeconds,
+    @Default('') String playTimeByCourt,
+    // Privacidad: qué comparte el usuario con sus amigos / en las canchas.
+    @Default(false) bool shareStatus, // mostrar "Jugando" a los amigos
+    @Default(false) bool shareCourt, // mostrar en qué cancha está jugando
+    @Default(false) bool shareTime, // mostrar cuánto tiempo lleva jugando
+    // Presencia actual (se actualiza al empezar/terminar un partido).
+    @Default(false) bool playing,
+    @Default('') String playingCourtId,
+    @Default('') String playingSince, // ISO8601, '' si no está jugando
+  }) = _Profile;
 
-  const Profile({
-    this.pageId = '',
-    required this.name,
-    this.handle = '',
-    this.phone = '',
-    this.city = '',
-    this.lat = 0,
-    this.lng = 0,
-    this.avatar = '',
-    this.position = '',
-    this.height = 0,
-    this.games = 0,
-    this.courts = 0,
-    this.streak = 0,
-    this.rating = 0,
-    this.userEmail = '',
-    this.clan = '',
-    this.avatarColor = '',
-    this.clanTextColor = '',
-    this.clanFont = '',
-    this.title = '',
-    this.level = '',
-    this.shareStatus = false,
-    this.shareCourt = false,
-    this.shareTime = false,
-    this.playing = false,
-    this.playingCourtId = '',
-    this.playingSince = '',
-  });
+  /// Para cachear la sesión en SharedPreferences (restauración offline).
+  factory Profile.fromJson(Map<String, dynamic> json) =>
+      _$ProfileFromJson(json);
 
   /// Texto compuesto "Base · 1.82m" para mostrar en el perfil.
   String get pos {
@@ -118,6 +114,7 @@ class Profile {
       games: NotionService.readInt(p, 'Games'),
       courts: NotionService.readInt(p, 'Courts'),
       streak: NotionService.readInt(p, 'Streak'),
+      points: NotionService.readInt(p, 'Points'),
       rating: NotionService.readNumber(p, 'Rating'),
       userEmail: NotionService.readText(p, 'UserEmail'),
       clan: NotionService.readText(p, 'Clan'),
@@ -126,6 +123,9 @@ class Profile {
       clanFont: NotionService.readText(p, 'ClanFont'),
       title: NotionService.readText(p, 'EquippedTitle'),
       level: NotionService.readText(p, 'Level'),
+      unlockedBadges: NotionService.readMultiSelect(p, 'UnlockedBadges'),
+      playSeconds: NotionService.readInt(p, 'PlaySeconds'),
+      playTimeByCourt: NotionService.readText(p, 'PlayTimeByCourt'),
       shareStatus: NotionService.readCheckbox(p, 'ShareStatus'),
       shareCourt: NotionService.readCheckbox(p, 'ShareCourt'),
       shareTime: NotionService.readCheckbox(p, 'ShareTime'),
@@ -149,6 +149,7 @@ class Profile {
       'Games': NotionService.number(games),
       'Courts': NotionService.number(courts),
       'Streak': NotionService.number(streak),
+      'Points': NotionService.number(points),
       'Rating': NotionService.number(rating),
       'UserEmail': NotionService.richText(userEmail),
       'Clan': NotionService.richText(clan),
@@ -157,6 +158,9 @@ class Profile {
       'ClanFont': NotionService.richText(clanFont),
       'EquippedTitle': NotionService.richText(title),
       'Level': NotionService.richText(level),
+      'UnlockedBadges': NotionService.multiSelect(unlockedBadges),
+      'PlaySeconds': NotionService.number(playSeconds),
+      'PlayTimeByCourt': NotionService.richText(playTimeByCourt),
       'ShareStatus': NotionService.checkbox(shareStatus),
       'ShareCourt': NotionService.checkbox(shareCourt),
       'ShareTime': NotionService.checkbox(shareTime),
@@ -166,119 +170,6 @@ class Profile {
           NotionService.date(playingSince.isEmpty ? null : playingSince),
     };
   }
-
-  Profile copyWith({
-    String? name,
-    String? handle,
-    String? phone,
-    String? city,
-    String? position,
-    double? height,
-    String? avatar,
-    String? clan,
-    String? avatarColor,
-    String? clanTextColor,
-    String? clanFont,
-    String? title,
-    String? level,
-    bool? shareStatus,
-    bool? shareCourt,
-    bool? shareTime,
-    bool? playing,
-    String? playingCourtId,
-    String? playingSince,
-  }) {
-    return Profile(
-      pageId: pageId,
-      name: name ?? this.name,
-      handle: handle ?? this.handle,
-      phone: phone ?? this.phone,
-      city: city ?? this.city,
-      lat: lat,
-      lng: lng,
-      avatar: avatar ?? this.avatar,
-      position: position ?? this.position,
-      height: height ?? this.height,
-      games: games,
-      courts: courts,
-      streak: streak,
-      rating: rating,
-      userEmail: userEmail,
-      clan: clan ?? this.clan,
-      avatarColor: avatarColor ?? this.avatarColor,
-      clanTextColor: clanTextColor ?? this.clanTextColor,
-      clanFont: clanFont ?? this.clanFont,
-      title: title ?? this.title,
-      level: level ?? this.level,
-      shareStatus: shareStatus ?? this.shareStatus,
-      shareCourt: shareCourt ?? this.shareCourt,
-      shareTime: shareTime ?? this.shareTime,
-      playing: playing ?? this.playing,
-      playingCourtId: playingCourtId ?? this.playingCourtId,
-      playingSince: playingSince ?? this.playingSince,
-    );
-  }
-
-  /// Para cachear la sesión en SharedPreferences (restauración offline).
-  Map<String, dynamic> toJson() => {
-        'pageId': pageId,
-        'name': name,
-        'handle': handle,
-        'phone': phone,
-        'city': city,
-        'lat': lat,
-        'lng': lng,
-        'avatar': avatar,
-        'position': position,
-        'height': height,
-        'games': games,
-        'courts': courts,
-        'streak': streak,
-        'rating': rating,
-        'userEmail': userEmail,
-        'clan': clan,
-        'avatarColor': avatarColor,
-        'clanTextColor': clanTextColor,
-        'clanFont': clanFont,
-        'title': title,
-        'level': level,
-        'shareStatus': shareStatus,
-        'shareCourt': shareCourt,
-        'shareTime': shareTime,
-        'playing': playing,
-        'playingCourtId': playingCourtId,
-        'playingSince': playingSince,
-      };
-
-  factory Profile.fromJson(Map<String, dynamic> j) => Profile(
-        pageId: j['pageId'] ?? '',
-        name: j['name'] ?? '',
-        handle: j['handle'] ?? '',
-        phone: j['phone'] ?? '',
-        city: j['city'] ?? '',
-        lat: (j['lat'] ?? 0).toDouble(),
-        lng: (j['lng'] ?? 0).toDouble(),
-        avatar: j['avatar'] ?? '',
-        position: j['position'] ?? '',
-        height: (j['height'] ?? 0).toDouble(),
-        games: (j['games'] ?? 0).toInt(),
-        courts: (j['courts'] ?? 0).toInt(),
-        streak: (j['streak'] ?? 0).toInt(),
-        rating: (j['rating'] ?? 0).toDouble(),
-        userEmail: j['userEmail'] ?? '',
-        clan: j['clan'] ?? '',
-        avatarColor: j['avatarColor'] ?? '',
-        clanTextColor: j['clanTextColor'] ?? '',
-        clanFont: j['clanFont'] ?? '',
-        title: j['title'] ?? '',
-        level: j['level'] ?? '',
-        shareStatus: j['shareStatus'] ?? false,
-        shareCourt: j['shareCourt'] ?? false,
-        shareTime: j['shareTime'] ?? false,
-        playing: j['playing'] ?? false,
-        playingCourtId: j['playingCourtId'] ?? '',
-        playingSince: j['playingSince'] ?? '',
-      );
 }
 
 /// Reseña de una cancha (base Reseñas).

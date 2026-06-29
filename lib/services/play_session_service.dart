@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../data/achievements.dart';
 import '../data/courts.dart';
+import '../theme/app_theme.dart';
 
 /// Detecta automáticamente cuándo el usuario está "jugando" en una cancha:
 /// si permanece dentro de [radiusMeters] de una cancha durante [dwellThreshold],
@@ -12,10 +14,13 @@ import '../data/courts.dart';
 ///
 /// Fase 1 (foreground): muestrea la ubicación cada [_sampleEvery] mientras la
 /// app está abierta. El tiempo activo se persiste cada 60s para no perderlo.
-class PlaySessionService extends ChangeNotifier {
+class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   static const double radiusMeters = 80;
   static const Duration dwellThreshold = Duration(minutes: 7);
   static const Duration _sampleEvery = Duration(seconds: 10);
+  // Cada cuánto se suben los agregados a Notion (batch). El historial y los
+  // favoritos NO se suben: quedan locales.
+  static const Duration _syncEvery = Duration(minutes: 2);
   static const String _kActive = 'play_active_session';
   static const String _kTotals = 'play_totals_by_court';
   static const String _kBackground = 'play_background_enabled';
@@ -25,6 +30,8 @@ class PlaySessionService extends ChangeNotifier {
   static const String _kStreak = 'play_streak';
   static const String _kStreakHist = 'play_streak_history';
   static const String _kPoints = 'play_points';
+  static const String _kBadges = 'play_unlocked_badges';
+  static const String _kNotifs = 'reward_notifications';
 
   List<Court> _courts = const [];
   Timer? _ticker;
@@ -38,9 +45,14 @@ class PlaySessionService extends ChangeNotifier {
   /// (ej. actualizar el estado "Jugando" en Notion vía Session).
   void Function(bool playing, String courtId, DateTime? since)? onPresenceChanged;
 
-  /// Notifica cuando el jugador sube de nivel (para guardarlo en Notion y que
-  /// lo vean los amigos).
-  void Function(int level)? onLevelChanged;
+  /// Se dispara cuando toca subir al batch (cada [_syncEvery], al pausar/cerrar
+  /// la app y en dispose). El listener "stagea" las stats actuales en la Session
+  /// y llama a `Session.flush()` (que sube todo el perfil en una petición si hay
+  /// cambios pendientes). El nivel ya viaja dentro de las stats.
+  VoidCallback? onFlush;
+
+  Timer? _syncTimer;
+
   int _tickCount = 0;
   bool _sampling = false;
 
@@ -69,6 +81,102 @@ class PlaySessionService extends ChangeNotifier {
   int _points = 0;
   int get points => _points;
   int get level => levelForPoints(_points);
+
+  // IDs de logros desbloqueados (insignias permanentes). Una vez logrado, queda
+  // logrado aunque las stats que lo originaron ya no estén (p.ej. tras reinstalar
+  // se pierde el historial pero el set se siembra desde Notion).
+  final Set<String> _unlockedBadges = {};
+  Set<String> get unlockedBadges => Set.unmodifiable(_unlockedBadges);
+
+  // ── Notificaciones de recompensa (logro / título / nivel) ────────────────
+  // Cola de eventos a mostrar como banner in-app. La UI (MainShell) muestra el
+  // primero, lo descarta con [acknowledgeReward] y sigue con el próximo.
+  final List<RewardEvent> _rewards = [];
+  List<RewardEvent> get rewards => List.unmodifiable(_rewards);
+
+  // Historial persistido de notificaciones (más reciente primero), para el
+  // listado del botón de campana.
+  List<AppNotification> _notifs = [];
+  List<AppNotification> get notifications => List.unmodifiable(_notifs);
+
+  /// Cantidad de notificaciones sin leer (para el badge de la campana).
+  int get unreadCount => _notifs.where((n) => !n.read).length;
+
+  // Mientras es false NO se generan notificaciones. Se mantiene apagado durante
+  // el sembrado inicial (restore + seed desde Notion) para no notificar el
+  // progreso que el usuario ya tenía al abrir la app.
+  bool _notify = false;
+  // Nivel y títulos ya conocidos: base para detectar lo "nuevo".
+  int _lastLevel = 1;
+  final Set<String> _knownTitles = {};
+
+  /// Descarta el primer evento de recompensa (lo llama la UI tras mostrarlo).
+  void acknowledgeReward() {
+    if (_rewards.isEmpty) return;
+    _rewards.removeAt(0);
+    notifyListeners();
+  }
+
+  /// Marca todas las notificaciones como leídas (al abrir el listado).
+  void markNotificationsRead() {
+    if (_notifs.every((n) => n.read)) return;
+    for (final n in _notifs) {
+      n.read = true;
+    }
+    _persistNotifs();
+    notifyListeners();
+  }
+
+  /// Borra el historial de notificaciones.
+  void clearNotifications() {
+    if (_notifs.isEmpty) return;
+    _notifs = [];
+    _persistNotifs();
+    notifyListeners();
+  }
+
+  /// Encola un evento (banner in-app) y lo guarda en el historial.
+  void _emit(RewardEvent e) {
+    _rewards.add(e);
+    _notifs.insert(
+      0,
+      AppNotification(
+        kind: e.kind,
+        refId: e.refId,
+        atMillis: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (_notifs.length > 50) _notifs = _notifs.sublist(0, 50);
+    _persistNotifs();
+  }
+
+  Future<void> _persistNotifs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _kNotifs, jsonEncode(_notifs.map((n) => n.toJson()).toList()));
+  }
+
+  /// Detecta si subió de nivel y encola el evento. Siempre actualiza la
+  /// referencia [_lastLevel] (incluso con [_notify] apagado, para no disparar
+  /// notificaciones retroactivas al activar).
+  void _checkLevelUp() {
+    final lvl = level;
+    if (_notify && lvl > _lastLevel) {
+      _emit(RewardEvent.levelUp(lvl));
+    }
+    _lastLevel = lvl;
+  }
+
+  /// Snapshot actual de stats para evaluar logros.
+  PlayStats get _currentStats => PlayStats(
+        partidos: _totalPlays,
+        canchas: uniqueCourtsCount,
+        victorias: wins,
+        maxRacha: bestStreak,
+        segundos: totalSeconds,
+        entrenamientos: trainings,
+        victoriasAnio: winsLastYear,
+      );
 
   // Historial de partidos terminados (más reciente primero), racha actual de
   // victorias consecutivas, e historial de rachas cerradas.
@@ -121,6 +229,13 @@ class PlaySessionService extends ChangeNotifier {
   int get totalSeconds =>
       _totals.values.fold(0, (a, b) => a + b.seconds) + _pending;
 
+  /// Desglose por cancha serializado (mismo formato que la persistencia local)
+  /// para subirlo a Notion: {courtId: {"n": nombre, "s": segundos}}.
+  String get totalsJson => jsonEncode({
+        for (final e in _totals.entries)
+          e.key: {'n': e.value.name, 's': e.value.seconds},
+      });
+
   /// Tiempo jugado en una cancha puntual, incluyendo la sesión en curso.
   int secondsForCourt(String courtId) {
     final base = _totals[courtId]?.seconds ?? 0;
@@ -162,9 +277,81 @@ class PlaySessionService extends ChangeNotifier {
   }
 
   /// Arranca el muestreo de ubicación (pide permiso si hace falta).
-  Future<void> startTracking() async {
+  ///
+  /// [seedPoints]/[seedPlays]/[seedStreak] vienen del perfil de Notion: si la
+  /// nube tiene valores más altos que los locales (p.ej. tras reinstalar), se
+  /// adoptan para no perder progreso ni bajar de nivel.
+  Future<void> startTracking({
+    int seedPoints = 0,
+    int seedPlays = 0,
+    int seedStreak = 0,
+    List<String> seedBadges = const [],
+    String seedTotalsJson = '',
+  }) async {
     if (_ticker != null) return;
+    // Notificaciones apagadas durante todo el sembrado: el progreso preexistente
+    // (local + el sembrado desde Notion) no debe disparar banners al arrancar.
+    _notify = false;
     await _restore();
+
+    // Sembrado desde Notion: nunca por debajo de lo que ya hay en la nube.
+    var seeded = false;
+    if (seedPoints > _points) {
+      _points = seedPoints;
+      await _persistPoints();
+      seeded = true;
+    }
+    if (seedPlays > _totalPlays) {
+      _totalPlays = seedPlays;
+      await _persistPlays();
+      seeded = true;
+    }
+    if (seedStreak > _streak) {
+      _streak = seedStreak;
+      await _persistStreak();
+      seeded = true;
+    }
+    // Insignias: unión con las de Notion (las ganadas nunca se pierden).
+    if (seedBadges.isNotEmpty) {
+      _unlockedBadges.addAll(seedBadges);
+      await _persistBadges();
+      seeded = true;
+    }
+    // Tiempo por cancha: merge con Notion, quedándonos con el mayor por cancha
+    // (no perdemos lo acumulado en otro dispositivo).
+    if (seedTotalsJson.isNotEmpty) {
+      try {
+        final m = jsonDecode(seedTotalsJson) as Map<String, dynamic>;
+        var merged = false;
+        m.forEach((k, v) {
+          final o = v as Map<String, dynamic>;
+          final secs = (o['s'] as num?)?.toInt() ?? 0;
+          final name = (o['n'] ?? '') as String;
+          final cur = _totals[k];
+          if (cur == null || secs > cur.seconds) {
+            _totals[k] = _CourtPlay(
+                cur != null && cur.name.isNotEmpty ? cur.name : name, secs);
+            merged = true;
+          }
+        });
+        if (merged) {
+          await _persistTotals();
+          seeded = true;
+        }
+      } catch (_) {/* JSON corrupto: ignorar */}
+    }
+    // Por si las stats (sembradas o locales) desbloquean logros nuevos. Con
+    // _notify apagado esto solo siembra los sets conocidos, sin notificar.
+    _recomputeBadges();
+    // A partir de acá, lo que se desbloquee SÍ se notifica.
+    _lastLevel = level;
+    _notify = true;
+    if (seeded) notifyListeners();
+
+    // Observador de ciclo de vida + timer de sync por lotes (una sola vez).
+    WidgetsBinding.instance.addObserver(this);
+    _syncTimer ??= Timer.periodic(_syncEvery, (_) => _flush());
+
     LocationPermission perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) {
       perm = await Geolocator.requestPermission();
@@ -182,6 +369,55 @@ class PlaySessionService extends ChangeNotifier {
     _ticker?.cancel();
     _ticker = null;
     _stopStream();
+  }
+
+  // ── Sync por lotes (batch) ───────────────────────────────────────────────
+
+  /// Pide subir lo pendiente. El listener (`onFlush`) stagea las stats y llama a
+  /// `Session.flush()`, que decide si hay algo para subir según su flag dirty.
+  void _flush() => onFlush?.call();
+
+  /// Fuerza la subida (p. ej. al cerrar sesión). Útil para no esperar al timer.
+  void flush() => _flush();
+
+  /// Recalcula qué logros están desbloqueados según las stats actuales y los
+  /// agrega al set permanente. Si hubo nuevos, los marca para subir y (si las
+  /// notificaciones ya están activas) encola los banners de logro y de los
+  /// títulos que esos logros recién destrabaron.
+  void _recomputeBadges() {
+    final stats = _currentStats;
+    var changed = false;
+    for (final a in kAchievements) {
+      if (a.unlocked(stats) && _unlockedBadges.add(a.id)) {
+        changed = true;
+        if (_notify) _emit(RewardEvent.achievement(a));
+      }
+    }
+    // Títulos recién desbloqueados (derivan de los logros). Con _notify apagado
+    // solo sembramos el set conocido, sin generar notificaciones.
+    for (final t in kTitles) {
+      if (t.unlocked(stats) && _knownTitles.add(t.name) && _notify) {
+        _emit(RewardEvent.title(t));
+      }
+    }
+    if (changed) _persistBadges();
+    notifyListeners();
+  }
+
+  Future<void> _persistBadges() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_kBadges, _unlockedBadges.toList());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Al minimizar/cerrar la app subimos lo pendiente: el timer solo corre con
+    // la app abierta, así no perdemos lo acumulado en el último tramo.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      _flush();
+    }
   }
 
   /// Habilita/deshabilita la detección en segundo plano (lo elige el usuario).
@@ -220,7 +456,7 @@ class PlaySessionService extends ChangeNotifier {
         accuracy: LocationAccuracy.high,
         distanceFilter: 8,
         foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: 'Triples',
+          notificationTitle: '1of1',
           notificationText: 'Detectando si estás jugando en una cancha',
           enableWakeLock: true,
         ),
@@ -350,6 +586,7 @@ class PlaySessionService extends ChangeNotifier {
     _persistTotals();
     _persistPlays();
     _persistActive();
+    _recomputeBadges();
     onPresenceChanged?.call(true, c.id, _startedAt);
     notifyListeners();
   }
@@ -412,17 +649,16 @@ class PlaySessionService extends ChangeNotifier {
     };
     final gained =
         (p.seconds ~/ 60) + resultBonus + streakBonus + (isNewCourt ? 30 : 0);
-    final prevLevel = levelForPoints(_points);
     _points += gained;
-    final newLevel = levelForPoints(_points);
 
     _pendingSession = null;
     await _persistLog();
     await _persistStreak();
     await _persistPoints();
     await _clearPending();
+    _recomputeBadges();
+    _checkLevelUp(); // los puntos ganados pueden haber subido el nivel
     notifyListeners();
-    if (newLevel != prevLevel) onLevelChanged?.call(newLevel);
   }
 
   // ── Persistencia local ─────────────────────────────────────────────────
@@ -501,6 +737,20 @@ class PlaySessionService extends ChangeNotifier {
     _totalPlays = prefs.getInt(_kPlays) ?? 0;
     _streak = prefs.getInt(_kStreak) ?? 0;
     _points = prefs.getInt(_kPoints) ?? 0;
+    _unlockedBadges
+      ..clear()
+      ..addAll(prefs.getStringList(_kBadges) ?? const []);
+
+    // Historial de notificaciones.
+    final rawNotifs = prefs.getString(_kNotifs);
+    if (rawNotifs != null) {
+      try {
+        final list = jsonDecode(rawNotifs) as List;
+        _notifs = list
+            .map((e) => AppNotification.fromJson(e as Map<String, dynamic>))
+            .toList();
+      } catch (_) {/* ignorar cache corrupto */}
+    }
 
     // Historial de partidos.
     final rawLog = prefs.getString(_kLog);
@@ -577,6 +827,9 @@ class PlaySessionService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _flush();
+    _syncTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _posSub?.cancel();
     super.dispose();
@@ -648,6 +901,119 @@ class PlaySession {
         seconds: (j['seconds'] as num?)?.toInt() ?? 0,
         endedAtMillis: (j['endedAt'] as num?)?.toInt() ?? 0,
         result: PlayResultX.fromName(j['result'] as String?),
+      );
+}
+
+/// Tipo de recompensa que dispara una notificación in-app.
+enum RewardKind { achievement, title, levelUp }
+
+/// Un evento de recompensa a mostrar como banner: logro o título desbloqueado,
+/// o subida de nivel. Lleva ya resuelto el texto, el ícono y el color a mostrar.
+///
+/// [refId] identifica de forma estable la recompensa (id del logro, nombre del
+/// título o número de nivel) para poder persistirla y reconstruirla luego sin
+/// guardar ícono/color (que se re-resuelven desde el catálogo).
+class RewardEvent {
+  final RewardKind kind;
+  final String refId;
+  final String headline; // ej. "¡Logro desbloqueado!"
+  final String name; // ej. "Trotamundos" / "Nivel 5"
+  final IconData icon;
+  final Color color;
+
+  const RewardEvent({
+    required this.kind,
+    required this.refId,
+    required this.headline,
+    required this.name,
+    required this.icon,
+    required this.color,
+  });
+
+  factory RewardEvent.achievement(Achievement a) => RewardEvent(
+        kind: RewardKind.achievement,
+        refId: a.id,
+        headline: '¡Logro desbloqueado!',
+        name: a.name,
+        icon: a.icon,
+        color: kGold,
+      );
+
+  factory RewardEvent.title(GameTitle t) => RewardEvent(
+        kind: RewardKind.title,
+        refId: t.name,
+        headline: '¡Nuevo título!',
+        name: t.name,
+        icon: Icons.workspace_premium,
+        color: t.color,
+      );
+
+  factory RewardEvent.levelUp(int level) => RewardEvent(
+        kind: RewardKind.levelUp,
+        refId: '$level',
+        headline: '¡Subiste de nivel!',
+        name: 'Nivel $level',
+        icon: Icons.trending_up,
+        color: AppColors.accent,
+      );
+
+  /// Reconstruye el evento a partir de su tipo y [refId] (al cargar el historial
+  /// persistido), re-resolviendo ícono/color/textos desde el catálogo.
+  factory RewardEvent.restore(RewardKind kind, String refId) {
+    switch (kind) {
+      case RewardKind.achievement:
+        final a = achievementById(refId);
+        if (a != null) return RewardEvent.achievement(a);
+      case RewardKind.title:
+        final t = titleByName(refId);
+        if (t != null) return RewardEvent.title(t);
+      case RewardKind.levelUp:
+        return RewardEvent.levelUp(int.tryParse(refId) ?? 1);
+    }
+    // Catálogo cambió y ya no existe: fallback neutro.
+    return RewardEvent(
+      kind: kind,
+      refId: refId,
+      headline: 'Notificación',
+      name: refId,
+      icon: Icons.notifications_outlined,
+      color: AppColors.accent,
+    );
+  }
+}
+
+/// Una notificación persistida en el historial: tipo + [refId] (para reconstruir
+/// el evento), cuándo ocurrió y si ya fue leída.
+class AppNotification {
+  final RewardKind kind;
+  final String refId;
+  final int atMillis;
+  bool read;
+
+  AppNotification({
+    required this.kind,
+    required this.refId,
+    required this.atMillis,
+    this.read = false,
+  });
+
+  RewardEvent get event => RewardEvent.restore(kind, refId);
+
+  Map<String, dynamic> toJson() => {
+        'kind': kind.name,
+        'refId': refId,
+        'at': atMillis,
+        'read': read,
+      };
+
+  factory AppNotification.fromJson(Map<String, dynamic> j) => AppNotification(
+        kind: RewardKind.values.firstWhere(
+          (k) => k.name == j['kind'],
+          orElse: () => RewardKind.achievement,
+        ),
+        refId: (j['refId'] ?? '') as String,
+        atMillis: (j['at'] as num?)?.toInt() ?? 0,
+        read: (j['read'] as bool?) ?? false,
       );
 }
 

@@ -106,16 +106,16 @@ class OnboardingScreen extends StatelessWidget {
                 letterSpacing: -0.03,
               ),
               children: [
-                const TextSpan(text: 'TRIPL'),
+                const TextSpan(text: '1'),
                 TextSpan(
-                  text: '∆',
+                  text: 'of',
                   style: AppText.archivo(
                     size: 20,
                     weight: FontWeight.w900,
                     color: AppColors.accent,
                   ),
                 ),
-                const TextSpan(text: 'S'),
+                const TextSpan(text: '1'),
               ],
             ),
           ),

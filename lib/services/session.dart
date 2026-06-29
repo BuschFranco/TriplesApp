@@ -17,13 +17,27 @@ class Session extends ChangeNotifier {
 
   static const _kEmail = 'session_email';
   static const _kProfile = 'session_profile';
+  // Si el usuario eligió mantener la sesión abierta. Si es false, al reabrir la
+  // app la sesión cacheada se descarta y hay que loguearse de nuevo.
+  static const _kPersist = 'session_persist';
+  // Posición de juego elegida por el usuario. Es puramente local (cosmética):
+  // NO se sube a Notion ni se comparte con los amigos.
+  static const _kLocalPosition = 'local_position';
 
   Profile? _profile;
   String? _email;
+  String _localPosition = '';
   bool _restoring = true;
+  // Hay cambios de perfil (stats, nivel, título, clan, privacidad, tiempo,
+  // logros) staged localmente sin subir. El batch los sube juntos en flush().
+  bool _dirty = false;
+  // Evita flushes concurrentes (timer + lifecycle pueden disparar a la vez).
+  bool _flushing = false;
 
   Profile? get profile => _profile;
   String? get email => _email;
+  /// Posición de juego elegida (local, cosmética). '' si no eligió ninguna.
+  String get localPosition => _localPosition;
   bool get restoring => _restoring;
   bool get isLoggedIn => _profile != null;
   bool get notionReady => _notion.isConfigured;
@@ -37,9 +51,19 @@ class Session extends ChangeNotifier {
   static String _hash(String email, String password) =>
       sha256.convert(utf8.encode('${email.toLowerCase()}:$password')).toString();
 
-  /// Restaura la sesión desde el cache local (sin red).
+  /// Restaura la sesión desde el cache local (sin red). Si el usuario no eligió
+  /// mantener la sesión abierta, descarta el cache y arranca deslogueado.
   Future<void> restore() async {
     final prefs = await SharedPreferences.getInstance();
+    _localPosition = prefs.getString(_kLocalPosition) ?? '';
+    final persist = prefs.getBool(_kPersist) ?? true;
+    if (!persist) {
+      await prefs.remove(_kEmail);
+      await prefs.remove(_kProfile);
+      _restoring = false;
+      notifyListeners();
+      return;
+    }
     final em = prefs.getString(_kEmail);
     final cached = prefs.getString(_kProfile);
     if (em != null && cached != null) {
@@ -52,8 +76,10 @@ class Session extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Devuelve null si OK, o un mensaje de error.
-  Future<String?> login(String emailRaw, String password) async {
+  /// Devuelve null si OK, o un mensaje de error. [persist] indica si la sesión
+  /// debe sobrevivir al cierre de la app (checkbox "Mantener sesión abierta").
+  Future<String?> login(String emailRaw, String password,
+      {bool persist = true}) async {
     if (!_notion.isConfigured) {
       return 'Notion no está configurado (falta el token).';
     }
@@ -71,6 +97,8 @@ class Session extends ChangeNotifier {
       }
       final profilePage = await _notion.retrievePage(user.profileId);
       await _persist(email, Profile.fromNotion(profilePage));
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kPersist, persist);
       return null;
     } on NotionException catch (e) {
       return 'Error conectando con Notion (${e.statusCode}).';
@@ -124,6 +152,8 @@ class Session extends ChangeNotifier {
       });
 
       await _persist(email, Profile.fromNotion(profilePage));
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kPersist, true);
       return null;
     } on NotionException catch (e) {
       return 'Error conectando con Notion (${e.statusCode}).';
@@ -196,9 +226,6 @@ class Session extends ChangeNotifier {
     required String textColor,
     required String font,
   }) async {
-    if (!_notion.isConfigured) {
-      return 'Notion no está configurado (falta el token).';
-    }
     final prof = _profile;
     final email = _email;
     if (prof == null || email == null) return 'No hay sesión activa.';
@@ -206,66 +233,33 @@ class Session extends ChangeNotifier {
     final c = clan.trim().toUpperCase();
     if (c.length > 4) return 'La insignia no puede superar los 4 caracteres.';
 
-    try {
-      await _notion.updatePage(prof.pageId, {
-        'Clan': NotionService.richText(c),
-        'AvatarColor': NotionService.richText(color),
-        'ClanTextColor': NotionService.richText(textColor),
-        'ClanFont': NotionService.richText(font),
-      });
-      await _persist(
-        email,
-        prof.copyWith(
-          clan: c,
-          avatarColor: color,
-          clanTextColor: textColor,
-          clanFont: font,
-        ),
-      );
-      return null;
-    } on NotionException catch (e) {
-      return 'Error conectando con Notion (${e.statusCode}).';
-    } catch (e) {
-      return 'Error inesperado: $e';
-    }
-  }
-
-  /// Actualiza el nivel del jugador en Notion (best-effort) para que lo vean
-  /// los amigos. Lo dispara el sistema de puntos al subir de nivel.
-  Future<void> setLevel(String level) async {
-    final prof = _profile;
-    final email = _email;
-    if (prof == null || email == null || !_notion.isConfigured) return;
-    if (prof.level == level) return;
-    try {
-      await _notion.updatePage(prof.pageId, {
-        'Level': NotionService.richText(level),
-      });
-      await _persist(email, prof.copyWith(level: level));
-    } catch (_) {/* se reintenta al próximo cambio de nivel */}
+    // Se guarda localmente y se sube en el próximo batch.
+    _dirty = true;
+    await _persist(
+      email,
+      prof.copyWith(
+        clan: c,
+        avatarColor: color,
+        clanTextColor: textColor,
+        clanFont: font,
+      ),
+    );
+    return null;
   }
 
   /// Equipa (o saca, si es vacío) el título visible bajo el nombre. Se guarda
-  /// en Notion para que los amigos lo vean.
+  /// localmente y se sube en el próximo batch.
   Future<String?> setTitle(String title) async {
     final prof = _profile;
     final email = _email;
     if (prof == null || email == null) return 'No hay sesión activa.';
-    if (!_notion.isConfigured) return 'Notion no está configurado.';
-    try {
-      await _notion.updatePage(prof.pageId, {
-        'EquippedTitle': NotionService.richText(title),
-      });
-      await _persist(email, prof.copyWith(title: title));
-      return null;
-    } on NotionException catch (e) {
-      return 'Error conectando con Notion (${e.statusCode}).';
-    } catch (e) {
-      return 'Error inesperado: $e';
-    }
+    _dirty = true;
+    await _persist(email, prof.copyWith(title: title));
+    return null;
   }
 
-  /// Actualiza las preferencias de privacidad (qué comparte con sus amigos).
+  /// Actualiza las preferencias de privacidad. Se guardan localmente y se suben
+  /// en el próximo batch.
   Future<String?> setSharePrefs({
     bool? shareStatus,
     bool? shareCourt,
@@ -274,27 +268,16 @@ class Session extends ChangeNotifier {
     final prof = _profile;
     final email = _email;
     if (prof == null || email == null) return 'No hay sesión activa.';
-    if (!_notion.isConfigured) return 'Notion no está configurado.';
-    try {
-      await _notion.updatePage(prof.pageId, {
-        if (shareStatus != null) 'ShareStatus': NotionService.checkbox(shareStatus),
-        if (shareCourt != null) 'ShareCourt': NotionService.checkbox(shareCourt),
-        if (shareTime != null) 'ShareTime': NotionService.checkbox(shareTime),
-      });
-      await _persist(
-        email,
-        prof.copyWith(
-          shareStatus: shareStatus,
-          shareCourt: shareCourt,
-          shareTime: shareTime,
-        ),
-      );
-      return null;
-    } on NotionException catch (e) {
-      return 'Error conectando con Notion (${e.statusCode}).';
-    } catch (e) {
-      return 'Error inesperado: $e';
-    }
+    _dirty = true;
+    await _persist(
+      email,
+      prof.copyWith(
+        shareStatus: shareStatus ?? prof.shareStatus,
+        shareCourt: shareCourt ?? prof.shareCourt,
+        shareTime: shareTime ?? prof.shareTime,
+      ),
+    );
+    return null;
   }
 
   /// Actualiza la presencia "jugando" en Notion. Best-effort (no bloquea ni
@@ -306,31 +289,115 @@ class Session extends ChangeNotifier {
   }) async {
     final prof = _profile;
     final email = _email;
-    if (prof == null || email == null || !_notion.isConfigured) return;
+    if (prof == null || email == null) return;
     final sinceIso = playing && since != null ? since.toIso8601String() : '';
+    // Actualizamos el caché primero (estado intencional) para que la UI ya lo
+    // refleje y, si la subida falla, el batch tenga qué reintentar.
+    await _persist(
+      email,
+      prof.copyWith(
+        playing: playing,
+        playingCourtId: playing ? courtId : '',
+        playingSince: sinceIso,
+      ),
+    );
+    if (!_notion.isConfigured) return;
     try {
-      await _notion.updatePage(prof.pageId, {
+      await _notion.updatePage(_profile!.pageId, {
         'Playing': NotionService.checkbox(playing),
         'PlayingCourtId': NotionService.richText(playing ? courtId : ''),
         'PlayingSince': NotionService.date(sinceIso.isEmpty ? null : sinceIso),
       });
-      await _persist(
-        email,
-        prof.copyWith(
-          playing: playing,
-          playingCourtId: playing ? courtId : '',
-          playingSince: sinceIso,
-        ),
-      );
-    } catch (_) {/* sin red: se reintenta en el próximo cambio de estado */}
+    } catch (_) {
+      // Falló la subida inmediata → marcamos dirty para que flush() la reintente
+      // cada 2 min (con todo el perfil) hasta que entre.
+      _dirty = true;
+    }
+  }
+
+  /// Define (o limpia, con '') la posición de juego. Es local y cosmética: se
+  /// guarda solo en SharedPreferences, no toca Notion ni el batch.
+  Future<void> setLocalPosition(String position) async {
+    _localPosition = position;
+    final prefs = await SharedPreferences.getInstance();
+    if (position.isEmpty) {
+      await prefs.remove(_kLocalPosition);
+    } else {
+      await prefs.setString(_kLocalPosition, position);
+    }
+    notifyListeners();
+  }
+
+  /// "Stagea" los agregados de juego en el perfil local y los marca para subir.
+  /// NO pega a la red: el envío real lo hace [flush] en el próximo batch. Si los
+  /// valores no cambiaron, no marca nada (evita peticiones inútiles).
+  Future<void> stageStats({
+    required int games,
+    required int courts,
+    required int streak,
+    required int points,
+    required String level,
+    required List<String> unlockedBadges,
+    required int playSeconds,
+    required String playTimeByCourt,
+  }) async {
+    final prof = _profile;
+    final email = _email;
+    if (prof == null || email == null) return;
+    final unchanged = prof.games == games &&
+        prof.courts == courts &&
+        prof.streak == streak &&
+        prof.points == points &&
+        prof.level == level &&
+        prof.playSeconds == playSeconds &&
+        prof.playTimeByCourt == playTimeByCourt &&
+        listEquals(prof.unlockedBadges, unlockedBadges);
+    if (unchanged) return;
+    _dirty = true;
+    await _persist(
+      email,
+      prof.copyWith(
+        games: games,
+        courts: courts,
+        streak: streak,
+        points: points,
+        level: level,
+        unlockedBadges: unlockedBadges,
+        playSeconds: playSeconds,
+        playTimeByCourt: playTimeByCourt,
+      ),
+    );
+  }
+
+  /// Sube TODO el perfil a Notion en UNA sola petición, si hay cambios staged.
+  /// Lo dispara el batch (cada ~2 min / al pausar / cerrar la app). Junta en una
+  /// llamada las stats, el tiempo jugado, los logros, el nivel, el título, el
+  /// clan y la privacidad acumulados desde la última subida.
+  Future<void> flush() async {
+    if (_flushing || !_dirty) return;
+    final prof = _profile;
+    if (prof == null || !_notion.isConfigured) return;
+    _flushing = true;
+    try {
+      await _notion.updatePage(prof.pageId, prof.toNotionProperties());
+      _dirty = false;
+    } catch (_) {
+      /* sin red: dirty queda en true → se reintenta en el próximo flush */
+    } finally {
+      _flushing = false;
+    }
   }
 
   Future<void> logout() async {
+    await flush(); // subir lo que haya quedado pendiente antes de cerrar
+    _dirty = false;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kEmail);
     await prefs.remove(_kProfile);
+    await prefs.remove(_kLocalPosition);
     _profile = null;
     _email = null;
+    _localPosition = '';
     notifyListeners();
   }
 

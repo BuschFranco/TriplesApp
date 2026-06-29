@@ -4,6 +4,9 @@ import '../theme/app_theme.dart';
 class AppChip extends StatelessWidget {
   final String label;
   final bool active;
+  // Variante coloreada (ej. la rareza de un título equipado). Tiñe fondo,
+  // borde y texto con este color.
+  final Color? color;
   final String? icon;
   final VoidCallback? onTap;
 
@@ -11,15 +14,21 @@ class AppChip extends StatelessWidget {
     super.key,
     required this.label,
     this.active = false,
+    this.color,
     this.icon,
     this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bg = active ? AppColors.accent : AppColors.white(0.06);
-    final col = active ? Colors.white : const Color(0xFFF5F7FA);
-    final border = active ? AppColors.accent : AppColors.white(0.10);
+    final tint = color;
+    final bg = tint != null
+        ? tint.withAlpha(28)
+        : (active ? AppColors.accent : AppColors.white(0.06));
+    final col = tint ?? (active ? Colors.white : const Color(0xFFF5F7FA));
+    final border = tint != null
+        ? tint.withAlpha(120)
+        : (active ? AppColors.accent : AppColors.white(0.10));
 
     return GestureDetector(
       onTap: onTap,

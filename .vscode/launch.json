@@ -2,13 +2,13 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Triples (debug)",
+      "name": "1of1 (debug)",
       "request": "launch",
       "type": "dart",
       "args": ["--dart-define-from-file=dart_defines.json"]
     },
     {
-      "name": "Triples (release)",
+      "name": "1of1 (release)",
       "request": "launch",
       "type": "dart",
       "flutterMode": "release",
