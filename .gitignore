@@ -21,3 +21,10 @@ Thumbs.db
 *.iws
 
 # La carpeta .vscode se versiona (launch configs compartidas), por eso NO se ignora.
+
+# Artefactos de Flutter generados por error en la raíz (el proyecto vive en app/).
+/.dart_tool/
+/.flutter-plugins-dependencies
+/android/
+/ios/
+/build/

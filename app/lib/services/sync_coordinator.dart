@@ -1,5 +1,6 @@
 import 'package:native_geofence/native_geofence.dart';
 import 'courts_provider.dart';
+import 'favorites_provider.dart';
 import 'geofence_service.dart';
 import 'notifications_service.dart';
 import 'play_session_service.dart';
@@ -22,15 +23,18 @@ class SyncCoordinator {
     required Session session,
     required PlaySessionService play,
     required CourtsProvider courts,
+    required FavoritesProvider favorites,
   })  : _session = session,
         _play = play,
-        _courts = courts {
+        _courts = courts,
+        _favorites = favorites {
     _wire();
   }
 
   final Session _session;
   final PlaySessionService _play;
   final CourtsProvider _courts;
+  final FavoritesProvider _favorites;
 
   // Evita arrancar el tracking más de una vez por sesión (Session notifica en
   // cada cambio de perfil, no solo al loguear).
@@ -41,8 +45,26 @@ class SyncCoordinator {
 
   void _wire() {
     // Presencia "Jugando" → Notion (best-effort, con reintento vía batch).
+    // Además dispara una notificación del sistema en cada arranque/cierre de
+    // partido: son eventos siempre visibles (a diferencia de las recompensas,
+    // que dependen de desbloquear algo), así que sirven de feedback y de prueba
+    // de que el canal de notificaciones funciona.
     _play.onPresenceChanged = (playing, courtId, since) {
       _session.setPresence(playing: playing, courtId: courtId, since: since);
+      if (playing) {
+        final name = _courtNameById(courtId);
+        NotificationsService.instance.show(
+          '¡Arrancó tu partido!',
+          name == null
+              ? 'Estamos contando tu tiempo en la cancha.'
+              : 'Contando tu tiempo en $name.',
+        );
+      } else {
+        NotificationsService.instance.show(
+          'Terminó tu partido',
+          'Abrí 1of1 para registrar el resultado.',
+        );
+      }
     };
 
     // Geofencing del SO: enter/exit de la zona de una cancha arranca/corta el
@@ -62,6 +84,22 @@ class SyncCoordinator {
     _play.onReward = (r) {
       NotificationsService.instance.show(r.headline, r.name);
     };
+
+    // Notificación de sesión (cronómetro persistente con la app minimizada).
+    _play.onDwellNotif = (court, endsAt) =>
+        NotificationsService.instance.showDwellCountdown(court, endsAt);
+    _play.onPlayingNotif = (court, startedAt) =>
+        NotificationsService.instance.showPlaying(court, startedAt);
+    _play.onEndingNotif = (court, endsAt) =>
+        NotificationsService.instance.showEndingCountdown(court, endsAt);
+    _play.onPausedNotif = (court, elapsed) =>
+        NotificationsService.instance.showPaused(court, elapsed);
+    _play.onClearSessionNotif = () =>
+        NotificationsService.instance.cancelSession();
+    // Botones de la notificación → arrancan/detienen/pausan el partido (vivo).
+    NotificationsService.instance.onStartNowAction = () => _play.startNow();
+    NotificationsService.instance.onStopAction = () => _play.stopNow();
+    NotificationsService.instance.onPauseAction = () => _play.togglePause();
 
     // Batch: cuando el service lo pide (cada 2 min / al pausar / cerrar),
     // stageamos las stats actuales y subimos TODO el perfil en una sola
@@ -87,6 +125,16 @@ class SyncCoordinator {
     // Arranca/detiene el tracking según haya o no sesión activa.
     _session.addListener(_onSessionChanged);
     _onSessionChanged();
+  }
+
+  /// Nombre de una cancha por id (para el texto de la notificación). null si no
+  /// está en el catálogo cargado o el id viene vacío (p. ej. al cerrar).
+  String? _courtNameById(String id) {
+    if (id.isEmpty) return null;
+    for (final c in _courts.courts) {
+      if (c.id == id) return c.name;
+    }
+    return null;
   }
 
   void _pushCourts() {
@@ -115,9 +163,11 @@ class SyncCoordinator {
   void _onSessionChanged() {
     final p = _session.profile;
     if (p == null) {
-      // Cierre de sesión: frenamos el tracking y reseteamos para el próximo login.
+      // Cierre de sesión: frenamos el tracking y limpiamos el estado en memoria
+      // (puntos, logros, historial) para que NO se filtren a la próxima cuenta.
       if (_trackingStarted) {
-        _play.stopTracking();
+        _play.resetForLogout();
+        _favorites.clearForLogout();
         _trackingStarted = false;
         _geofencedCount = -1;
         GeofenceService.instance.clear();
@@ -126,8 +176,12 @@ class SyncCoordinator {
     }
     if (_trackingStarted) return;
     _trackingStarted = true;
+    // Clave por usuario: aísla los datos locales de cada cuenta en el dispositivo.
+    final userKey = (_session.email ?? p.userEmail).trim().toLowerCase();
+    _favorites.setUser(userKey);
     // Sembrar desde Notion para no perder progreso tras reinstalar.
     _play.startTracking(
+      userKey: userKey,
       seedPoints: p.points,
       seedPlays: p.games,
       seedStreak: p.streak,

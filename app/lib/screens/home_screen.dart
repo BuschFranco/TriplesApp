@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -5,6 +6,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import '../data/courts.dart';
+import '../services/notifications_service.dart';
 import '../services/play_session_service.dart';
 import '../services/profiles_provider.dart';
 import '../services/session.dart';
@@ -82,6 +84,13 @@ class _HomeScreenState extends State<HomeScreen>
   bool _showSearch = false;
   bool _locating = false;
 
+  // DEV: modo prueba de ubicación. Con esto activo, tocar el mapa mueve tu
+  // ubicación simulada a ese punto para probar el radio y las canchas.
+  bool _mockMode = false;
+
+  // Stream de ubicación para mover el punto azul en vivo (como otras apps).
+  StreamSubscription<Position>? _posStream;
+
   // Filtros rápidos activos (chips debajo del buscador). "Cerca" ordena por
   // cercanía a la ubicación del usuario; el resto filtra la lista.
   final Set<String> _activeFilters = {'Cerca'};
@@ -115,7 +124,7 @@ class _HomeScreenState extends State<HomeScreen>
   // índice seleccionado, no en cada setState (buscar, spinner, etc.).
   Set<Marker> _markers = {};
 
-  // Círculos del radio de detección de "jugando" (40m) alrededor de cada cancha.
+  // Círculos del radio de detección de "jugando" (110m) alrededor de cada cancha.
   Set<Circle> _circles = {};
 
   void _applyFilters() {
@@ -231,8 +240,35 @@ class _HomeScreenState extends State<HomeScreen>
     _pageCtrl = PageController(initialPage: _index);
     _rebuildMarkers();
     _loadInitialPosition();
+    _startLocationUpdates();
     // La detección de partidos (presencia, batch, sembrado y canchas) la cablea
     // SyncCoordinator al arrancar la app; HomeScreen ya no orquesta nada de eso.
+  }
+
+  /// Sigue la ubicación en vivo para mover el punto azul a medida que el usuario
+  /// se desplaza (no solo al tocar "mi ubicación"). En modo prueba se ignora el
+  /// GPS real: la ubicación la fija el tap en el mapa.
+  Future<void> _startLocationUpdates() async {
+    try {
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        return;
+      }
+      _posStream = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 5,
+        ),
+      ).listen((pos) {
+        if (!mounted || _mockMode) return;
+        setState(() => _userPos = pos);
+        _updateUserScreenPos();
+      }, onError: (_) {});
+    } catch (_) {}
   }
 
   @override
@@ -298,6 +334,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    _posStream?.cancel();
     _pulseCtrl.dispose();
     _mapCtrl?.dispose();
     _searchCtrl.dispose();
@@ -433,6 +470,7 @@ class _HomeScreenState extends State<HomeScreen>
               _updateUserScreenPos();
             },
             onCameraMove: (_) => _updateUserScreenPos(),
+            onTap: _mockMode ? _onMockTap : null,
             initialCameraPosition: const CameraPosition(
               target: LatLng(-34.6037, -58.3816),
               zoom: 12,
@@ -464,15 +502,68 @@ class _HomeScreenState extends State<HomeScreen>
               top: 112,
               left: 0,
               right: 0,
-              child: context.watch<PlaySessionService>().isPlaying
-                  ? _playingBanner(context)
-                  : _quickChips(),
+              child: Builder(builder: (context) {
+                final ps = context.watch<PlaySessionService>();
+                final active = ps.isPlaying || ps.isDwelling;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // El cronómetro se muestra SIEMPRE. Estar dentro del radio
+                    // solo lo "activa" (arranca la cuenta regresiva y el
+                    // partido); fuera del radio queda inactivo pero visible.
+                    if (ps.isPlaying)
+                      _playingBanner(context)
+                    else if (ps.isDwelling)
+                      _dwellBanner(context)
+                    else
+                      _idleTimer(context),
+                    if (!active) ...[
+                      const SizedBox(height: 10),
+                      _quickChips(),
+                    ],
+                  ],
+                );
+              }),
             ),
           Positioned(
             right: 16,
             bottom: 312,
-            child: _locateBtn(),
+            child: Column(
+              children: [
+                _devControls(),
+                const SizedBox(height: 10),
+                _locateBtn(),
+              ],
+            ),
           ),
+          if (_mockMode)
+            Positioned(
+              bottom: 296,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xF211181F),
+                    borderRadius: BorderRadius.circular(100),
+                    border: Border.all(color: AppColors.accent.withAlpha(140)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.touch_app, size: 14, color: AppColors.accent),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Modo prueba · tocá el mapa para moverte',
+                        style: AppText.grotesk(size: 11, weight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           Positioned(
             bottom: 148,
             left: 0,
@@ -589,16 +680,25 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _playingBanner(BuildContext context) {
     final ps = context.watch<PlaySessionService>();
-    final s = ps.elapsedSeconds;
-    final mm = (s ~/ 60).toString().padLeft(2, '0');
-    final ss = (s % 60).toString().padLeft(2, '0');
+    // Si saliste del radio, mostramos la cuenta regresiva de cierre (ámbar);
+    // si no, el tiempo transcurrido del partido (verde / gris si está pausado).
+    final ending = ps.isEndingSoon;
+    final paused = ps.isPaused;
+    final secs = ending ? ps.endRemainingSeconds : ps.elapsedSeconds;
+    final mm = (secs ~/ 60).toString().padLeft(2, '0');
+    final ss = (secs % 60).toString().padLeft(2, '0');
+    const amber = Color(0xFFE9B949);
+    final accent = ending
+        ? amber
+        : (paused ? AppColors.white(0.7) : AppColors.open);
     return Center(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
         decoration: BoxDecoration(
           color: const Color(0xF211181F),
           borderRadius: BorderRadius.circular(100),
-          border: Border.all(color: AppColors.open.withAlpha(120)),
+          border: Border.all(color: accent.withAlpha(140)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -606,23 +706,187 @@ class _HomeScreenState extends State<HomeScreen>
             Container(
               width: 8,
               height: 8,
-              decoration: const BoxDecoration(
-                color: AppColors.open,
-                shape: BoxShape.circle,
+              decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    ending ? 'Termina en $mm:$ss' : '$mm:$ss',
+                    style: AppText.archivo(
+                      size: 13,
+                      weight: FontWeight.w800,
+                      color: accent,
+                    ),
+                  ),
+                  Text(
+                    ending
+                        ? 'Saliste de ${ps.courtName ?? 'la cancha'}'
+                        : (paused
+                            ? 'Pausado'
+                            : 'Jugando en ${ps.courtName ?? ''}'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.grotesk(size: 10, color: AppColors.white(0.6)),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
-              'Jugando en ${ps.courtName ?? ''}',
-              style: AppText.grotesk(size: 12, weight: FontWeight.w600),
+            const SizedBox(width: 10),
+            // Botón pausa/reanudar (un solo botón, alterna). Solo en juego normal:
+            // durante la cuenta de cierre no aplica.
+            if (!ending) ...[
+              GestureDetector(
+                onTap: () => context.read<PlaySessionService>().togglePause(),
+                child: Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: AppColors.white(0.08),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: AppColors.white(0.18)),
+                  ),
+                  child: Icon(
+                    paused ? Icons.play_arrow : Icons.pause,
+                    size: 18,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
+            GestureDetector(
+              onTap: () => context.read<PlaySessionService>().stopNow(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: ending ? amber : AppColors.white(0.08),
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(
+                      color: ending ? Colors.transparent : AppColors.white(0.18)),
+                ),
+                child: Text(
+                  'DETENER',
+                  style: AppText.archivo(
+                    size: 10,
+                    weight: FontWeight.w800,
+                    letterSpacing: 0.04,
+                    color: ending ? Colors.black : Colors.white,
+                  ),
+                ),
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Cronómetro en reposo: visible siempre que no haya partido ni cuenta
+  /// regresiva en curso (incluso fuera del radio de cualquier cancha). Muestra
+  /// 00:00 e indica que hay que acercarse a una cancha; el partido (y el botón
+  /// para arrancarlo manualmente) recién se habilitan al entrar al radio.
+  Widget _idleTimer(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: const Color(0xF211181F),
+          borderRadius: BorderRadius.circular(100),
+          border: Border.all(color: AppColors.white(0.12)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.timer_outlined, size: 15, color: AppColors.white(0.55)),
             const SizedBox(width: 8),
             Text(
-              '$mm:$ss',
+              '00:00',
               style: AppText.archivo(
                 size: 13,
                 weight: FontWeight.w800,
-                color: AppColors.open,
+                color: AppColors.white(0.85),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                'Acercate a una cancha para jugar',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppText.grotesk(size: 11, color: AppColors.white(0.55)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Banner de cuenta regresiva: aparece al llegar a una cancha, antes de que el
+  /// partido arranque solo. Muestra cuánto falta y un botón para empezar ya.
+  Widget _dwellBanner(BuildContext context) {
+    final ps = context.watch<PlaySessionService>();
+    final s = ps.dwellRemainingSeconds;
+    final mm = (s ~/ 60).toString().padLeft(2, '0');
+    final ss = (s % 60).toString().padLeft(2, '0');
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+        decoration: BoxDecoration(
+          color: const Color(0xF211181F),
+          borderRadius: BorderRadius.circular(100),
+          border: Border.all(color: AppColors.accent.withAlpha(120)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.sports_basketball, size: 15, color: AppColors.accent),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Empieza en $mm:$ss',
+                    style: AppText.archivo(
+                      size: 13,
+                      weight: FontWeight.w800,
+                      color: AppColors.accent,
+                    ),
+                  ),
+                  Text(
+                    ps.dwellCourtName ?? 'En una cancha',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.grotesk(size: 10, color: AppColors.white(0.6)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            GestureDetector(
+              onTap: () => context.read<PlaySessionService>().startNow(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.accent,
+                  borderRadius: BorderRadius.circular(100),
+                ),
+                child: Text(
+                  'EMPEZAR YA',
+                  style: AppText.archivo(
+                    size: 10,
+                    weight: FontWeight.w800,
+                    letterSpacing: 0.04,
+                  ),
+                ),
               ),
             ),
           ],
@@ -753,6 +1017,73 @@ class _HomeScreenState extends State<HomeScreen>
       ),
         );
       },
+    );
+  }
+
+  // ── DEV: prueba de ubicación ──────────────────────────────────────────────
+
+  /// Tocar el mapa en modo prueba: mueve la ubicación simulada (y el punto azul)
+  /// a ese punto y dispara la detección de cercanía.
+  void _onMockTap(LatLng p) {
+    context.read<PlaySessionService>().setMock(p.latitude, p.longitude);
+    setState(() {
+      _userPos = Position(
+        latitude: p.latitude,
+        longitude: p.longitude,
+        timestamp: DateTime.now(),
+        accuracy: 5,
+        altitude: 0,
+        altitudeAccuracy: 0,
+        heading: 0,
+        headingAccuracy: 0,
+        speed: 0,
+        speedAccuracy: 0,
+      );
+    });
+    _updateUserScreenPos();
+  }
+
+  void _toggleMockMode() {
+    final play = context.read<PlaySessionService>();
+    setState(() => _mockMode = !_mockMode);
+    if (!_mockMode) {
+      play.clearMock();
+      _loadInitialPosition(); // volvemos al GPS real
+    }
+  }
+
+  Widget _devControls() {
+    return Column(
+      children: [
+        if (_mockMode) ...[
+          // Botón de prueba de notificación: si aparece la notificación,
+          // el permiso está concedido y el canal funciona.
+          _devBtn(
+            Icons.notifications_active,
+            AppColors.open,
+            () => NotificationsService.instance
+                .show('Prueba', 'Las notificaciones funcionan ✅'),
+          ),
+          const SizedBox(height: 10),
+        ],
+        _devBtn(
+          _mockMode ? Icons.wrong_location : Icons.bug_report,
+          _mockMode ? AppColors.accent : AppColors.white(0.7),
+          _toggleMockMode,
+        ),
+      ],
+    );
+  }
+
+  Widget _devBtn(IconData icon, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: _glassContainer(
+        width: 48,
+        height: 48,
+        radius: 16,
+        child: Center(child: Icon(icon, color: color, size: 22)),
+      ),
     );
   }
 

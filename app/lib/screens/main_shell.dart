@@ -29,9 +29,13 @@ class _MainShellState extends State<MainShell> {
   void initState() {
     super.initState();
     // Permiso de notificaciones tras el primer frame: no interfiere con el
-    // arranque de la UI ni del mapa.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      NotificationsService.instance.requestPermission();
+    // arranque de la UI ni del mapa. Si el SO ya las tiene habilitadas (algunos
+    // equipos las auto-conceden), no se vuelve a pedir.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final ns = NotificationsService.instance;
+      if (!await ns.isEnabled()) {
+        await ns.requestPermission();
+      }
     });
   }
 

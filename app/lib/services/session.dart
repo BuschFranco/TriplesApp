@@ -225,6 +225,7 @@ class Session extends ChangeNotifier {
     required String color,
     required String textColor,
     required String font,
+    String? frame,
   }) async {
     final prof = _profile;
     final email = _email;
@@ -242,6 +243,7 @@ class Session extends ChangeNotifier {
         avatarColor: color,
         clanTextColor: textColor,
         clanFont: font,
+        avatarFrame: frame ?? prof.avatarFrame,
       ),
     );
     return null;

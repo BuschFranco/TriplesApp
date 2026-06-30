@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../data/achievements.dart';
+import '../data/cosmetics.dart';
 import '../data/courts.dart';
 import '../data/models.dart';
 import '../services/courts_provider.dart';
@@ -417,7 +418,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final label = hasClan
         ? profile.clan.trim().toUpperCase()
         : (profile.name.isNotEmpty ? profile.name[0] : '?').toUpperCase();
-    return Container(
+    final inner = Container(
       width: 84,
       height: 84,
       alignment: Alignment.center,
@@ -459,6 +460,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             ),
     );
+    return framedAvatar(frameById(profile.avatarFrame), 24, inner);
   }
 
   Widget _levelCard() {
@@ -607,6 +609,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         segundos: ps.totalSeconds,
         entrenamientos: ps.trainings,
         victoriasAnio: ps.winsLastYear,
+        nivel: ps.level,
       );
 
   PlayStats _stats() => _statsOf(context.watch<PlaySessionService>());
@@ -1140,6 +1143,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         currentColor: profile.avatarColor,
         currentTextColor: profile.clanTextColor,
         currentFont: profile.clanFont,
+        currentFrame: profile.avatarFrame,
+        level: context.read<PlaySessionService>().level,
       ),
     );
     if (changed == true && context.mounted) {
@@ -1519,7 +1524,7 @@ class _FriendsTabState extends State<_FriendsTab> {
     final textColor = clanTextColor(fp?.clanTextColor ?? '');
     final useImage = !hasClan && (fp?.avatar ?? '').isNotEmpty;
     final label = hasClan ? fp!.clan.trim().toUpperCase() : initial;
-    return Container(
+    final inner = Container(
       width: 44,
       height: 44,
       alignment: Alignment.center,
@@ -1551,6 +1556,7 @@ class _FriendsTabState extends State<_FriendsTab> {
               ),
             ),
     );
+    return framedAvatar(frameById(fp?.avatarFrame ?? ''), 12, inner);
   }
 
   Widget _friendCard(Friend f) {
@@ -1760,30 +1766,6 @@ class _EditHandleDialogState extends State<_EditHandleDialog> {
   }
 }
 
-/// Paleta de colores disponibles para el avatar / insignia de clan.
-/// Hex de 6 dígitos sin '#'. El primero (naranja) es el color por defecto.
-const List<String> _clanPalette = [
-  'FF6B1A', // naranja (accent)
-  '3B82F6', // azul
-  '22C55E', // verde
-  'A855F7', // violeta
-  'EF4444', // rojo
-  '14B8A6', // teal
-  'EC4899', // rosa
-  'EAB308', // amarillo
-];
-
-/// Tipografías disponibles para el clan (nombres de Google Fonts, estilo
-/// display). La primera es el default.
-const List<String> _clanFonts = [
-  'Archivo',
-  'Bebas Neue',
-  'Anton',
-  'Russo One',
-  'Orbitron',
-  'Black Ops One',
-];
-
 /// Construye el TextStyle del clan para una familia de Google Fonts. Si el
 /// nombre no existe, cae a Archivo.
 TextStyle clanFontStyle(
@@ -1799,19 +1781,6 @@ TextStyle clanFontStyle(
     return GoogleFonts.archivo(fontSize: size, fontWeight: weight, color: color);
   }
 }
-
-/// Paleta para el color de las letras del clan. Blanco (default) y negro
-/// primero, luego algunos acentos.
-const List<String> _clanTextPalette = [
-  'FFFFFF', // blanco (default)
-  '000000', // negro
-  'FF6B1A', // naranja
-  'EAB308', // amarillo
-  '22C55E', // verde
-  '3B82F6', // azul
-  'EF4444', // rojo
-  'A855F7', // violeta
-];
 
 /// Convierte un hex de 6 dígitos (sin '#') en Color. Vacío o inválido =>
 /// color de acento por defecto (usado para el fondo del avatar).
@@ -1831,6 +1800,27 @@ Color clanTextColor(String hex) {
   final v = int.tryParse(h, radix: 16);
   if (v == null) return Colors.white;
   return Color(0xFF000000 | v);
+}
+
+/// Envuelve el avatar [child] con el marco equipado: un anillo con degradado y
+/// un resplandor exterior. Si el marco es 'none' devuelve el avatar tal cual.
+Widget framedAvatar(AvatarFrame frame, double radius, Widget child) {
+  if (frame.isNone) return child;
+  return Container(
+    padding: const EdgeInsets.all(3),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(radius + 5),
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: frame.ring,
+      ),
+      boxShadow: [
+        BoxShadow(color: frame.glow.withAlpha(140), blurRadius: 20, spreadRadius: 1),
+      ],
+    ),
+    child: child,
+  );
 }
 
 /// Versión más oscura de un color, para el degradado del avatar.
@@ -1855,11 +1845,15 @@ class _ClanBadgeDialog extends StatefulWidget {
   final String currentColor;
   final String currentTextColor;
   final String currentFont;
+  final String currentFrame;
+  final int level;
   const _ClanBadgeDialog({
     required this.currentClan,
     required this.currentColor,
     required this.currentTextColor,
     required this.currentFont,
+    required this.currentFrame,
+    required this.level,
   });
 
   @override
@@ -1871,6 +1865,7 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
   late String _color;
   late String _textColor;
   late String _font;
+  late String _frame;
   bool _loading = false;
   String? _error;
 
@@ -1879,12 +1874,15 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
     super.initState();
     _ctrl = TextEditingController(text: widget.currentClan);
     _color = widget.currentColor.trim().isEmpty
-        ? _clanPalette.first
+        ? kBgColors.first.hex
         : widget.currentColor.trim().toUpperCase();
     _textColor = widget.currentTextColor.trim().isEmpty
-        ? _clanTextPalette.first
+        ? kTextColors.first.hex
         : widget.currentTextColor.trim().toUpperCase();
-    _font = widget.currentFont.trim().isEmpty ? _clanFonts.first : widget.currentFont.trim();
+    _font = widget.currentFont.trim().isEmpty
+        ? kFonts.first.family
+        : widget.currentFont.trim();
+    _frame = widget.currentFrame.trim().isEmpty ? 'none' : widget.currentFrame.trim();
   }
 
   @override
@@ -1903,6 +1901,7 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
           color: _color,
           textColor: _textColor,
           font: _font,
+          frame: _frame,
         );
     if (!mounted) return;
     if (err == null) {
@@ -1913,6 +1912,50 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
         _error = err;
       });
     }
+  }
+
+  /// Chip seleccionable de cosmético. Si está bloqueado (nivel insuficiente) se
+  /// atenúa, no responde al tap y muestra el candado con el nivel requerido.
+  Widget _lockableChip({
+    required bool unlocked,
+    required bool selected,
+    required int unlockLevel,
+    required VoidCallback onTap,
+    required Widget child,
+  }) {
+    return GestureDetector(
+      onTap: unlocked ? onTap : null,
+      child: Opacity(
+        opacity: unlocked ? 1 : 0.45,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? AppColors.accent.withAlpha(40)
+                : const Color(0xE011181F),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? AppColors.accent : AppColors.white(0.1),
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              child,
+              if (!unlocked) ...[
+                const SizedBox(width: 6),
+                Icon(Icons.lock, size: 12, color: AppColors.white(0.55)),
+                const SizedBox(width: 2),
+                Text('Nv $unlockLevel',
+                    style:
+                        AppText.grotesk(size: 10, color: AppColors.white(0.55))),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -1929,27 +1972,31 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Preview en vivo del avatar.
+          // Preview en vivo del avatar (con el marco equipado).
           Center(
-            child: Container(
-              width: 64,
-              height: 64,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: bg, width: 3),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [bg, _darkenColor(bg)],
+            child: framedAvatar(
+              frameById(_frame),
+              20,
+              Container(
+                width: 64,
+                height: 64,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: bg, width: 3),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [bg, _darkenColor(bg)],
+                  ),
                 ),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text(preview,
-                      style: clanFontStyle(_font, size: 22, color: fg)),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(preview,
+                        style: clanFontStyle(_font, size: 22, color: fg)),
+                  ),
                 ),
               ),
             ),
@@ -1990,6 +2037,46 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
             ),
           ),
           const SizedBox(height: 18),
+          Text('Marco',
+              style: AppText.grotesk(size: 12, color: AppColors.white(0.5))),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final fr in kFrames)
+                _lockableChip(
+                  unlocked: fr.unlockedAt(widget.level),
+                  selected: _frame == fr.id,
+                  unlockLevel: fr.unlockLevel,
+                  onTap: () => setState(() => _frame = fr.id),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 18,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: fr.isNone
+                              ? null
+                              : LinearGradient(colors: fr.ring),
+                          color: fr.isNone ? AppColors.white(0.12) : null,
+                          border: fr.isNone
+                              ? Border.all(color: AppColors.white(0.3))
+                              : null,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(fr.name,
+                          style: AppText.grotesk(
+                              size: 12, weight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 18),
           Text('Tipografía',
               style: AppText.grotesk(size: 12, color: AppColors.white(0.5))),
           const SizedBox(height: 10),
@@ -1997,42 +2084,29 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              for (final font in _clanFonts)
-                GestureDetector(
-                  onTap: () => setState(() => _font = font),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: _font == font
-                          ? AppColors.accent.withAlpha(40)
-                          : const Color(0xE011181F),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: _font == font
-                            ? AppColors.accent
-                            : AppColors.white(0.1),
-                        width: _font == font ? 1.5 : 1,
-                      ),
-                    ),
-                    child: Text(
-                      preview,
-                      style: clanFontStyle(font, size: 18),
-                    ),
-                  ),
+              for (final f in kFonts)
+                _lockableChip(
+                  unlocked: f.unlockedAt(widget.level),
+                  selected: _font == f.family,
+                  unlockLevel: f.unlockLevel,
+                  onTap: () => setState(() => _font = f.family),
+                  child: Text(preview, style: clanFontStyle(f.family, size: 18)),
                 ),
             ],
           ),
           const SizedBox(height: 18),
           _ColorPicker(
             label: 'Color del fondo',
-            palette: _clanPalette,
+            colors: kBgColors,
+            level: widget.level,
             value: _color,
             onChanged: (hex) => setState(() => _color = hex),
           ),
           const SizedBox(height: 18),
           _ColorPicker(
             label: 'Color de las letras',
-            palette: _clanTextPalette,
+            colors: kTextColors,
+            level: widget.level,
             value: _textColor,
             onChanged: (hex) => setState(() => _textColor = hex),
           ),
@@ -2070,12 +2144,14 @@ class _ClanBadgeDialogState extends State<_ClanBadgeDialog> {
 /// sincronizados entre sí. Notifica el hex elegido (6 dígitos) vía [onChanged].
 class _ColorPicker extends StatefulWidget {
   final String label;
-  final List<String> palette;
+  final List<CosmeticColor> colors;
+  final int level;
   final String value;
   final ValueChanged<String> onChanged;
   const _ColorPicker({
     required this.label,
-    required this.palette,
+    required this.colors,
+    required this.level,
     required this.value,
     required this.onChanged,
   });
@@ -2130,29 +2206,39 @@ class _ColorPickerState extends State<_ColorPicker> {
           spacing: 10,
           runSpacing: 10,
           children: [
-            for (final hex in widget.palette)
-              GestureDetector(
-                onTap: () => _select(hex),
-                child: Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    color: clanColor(hex),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: _value == hex ? Colors.white : AppColors.white(0.15),
-                      width: _value == hex ? 2.5 : 1,
+            for (final c in widget.colors)
+              () {
+                final unlocked = c.unlockedAt(widget.level);
+                final selected = _value == c.hex;
+                final contrast = clanColor(c.hex).computeLuminance() > 0.6
+                    ? Colors.black
+                    : Colors.white;
+                return GestureDetector(
+                  onTap: unlocked ? () => _select(c.hex) : null,
+                  child: Opacity(
+                    opacity: unlocked ? 1 : 0.4,
+                    child: Container(
+                      width: 34,
+                      height: 34,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: clanColor(c.hex),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color:
+                              selected ? Colors.white : AppColors.white(0.15),
+                          width: selected ? 2.5 : 1,
+                        ),
+                      ),
+                      child: !unlocked
+                          ? Icon(Icons.lock, size: 13, color: contrast)
+                          : (selected
+                              ? Icon(Icons.check, size: 16, color: contrast)
+                              : null),
                     ),
                   ),
-                  child: _value == hex
-                      ? Icon(Icons.check,
-                          size: 16,
-                          color: clanColor(hex).computeLuminance() > 0.6
-                              ? Colors.black
-                              : Colors.white)
-                      : null,
-                ),
-              ),
+                );
+              }(),
           ],
         ),
         const SizedBox(height: 12),

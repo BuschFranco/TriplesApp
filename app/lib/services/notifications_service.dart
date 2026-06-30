@@ -1,8 +1,27 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-/// Notificaciones locales del sistema (logro/título/nivel). Las dispara la app
-/// cuando detecta un desbloqueo; aparecen aunque esté minimizada (el proceso
-/// sigue vivo durante el juego por el foreground service de ubicación).
+/// Id de la acción "EMPEZAR YA" del cronómetro en la notificación de sesión.
+const String kStartNowAction = 'start_now';
+
+/// Id de la acción "DETENER" (cierra el partido en curso manualmente).
+const String kStopAction = 'stop_now';
+
+/// Id de la acción "PAUSAR/REANUDAR" (alterna la pausa del cronómetro).
+const String kPauseAction = 'toggle_pause';
+
+/// Handler de respuestas que corre en un ISOLATE DE BACKGROUND (app cerrada).
+/// No puede tocar el estado vivo del partido, así que es un no-op: la acción
+/// "EMPEZAR YA" solo arranca el partido con el proceso vivo (app minimizada).
+@pragma('vm:entry-point')
+void notificationBackgroundHandler(NotificationResponse response) {}
+
+/// Notificaciones locales del sistema. Dos usos:
+///  - Recompensas (logro/título/nivel) y eventos puntuales de partido.
+///  - Notificación de SESIÓN persistente: con la app minimizada muestra la
+///    cuenta regresiva de los 7 min (con botón "EMPEZAR YA") y, ya jugando, el
+///    tiempo del partido en curso. Usa el cronómetro nativo de Android, que
+///    corre solo sin que la app actualice cada segundo.
 class NotificationsService {
   NotificationsService._();
   static final NotificationsService instance = NotificationsService._();
@@ -12,12 +31,44 @@ class NotificationsService {
   bool _ready = false;
   int _nextId = 0;
 
+  /// Id fijo de la notificación de sesión (se reemplaza en cada cambio de
+  /// estado: dwell → jugando → limpia).
+  static const int _sessionId = 100000;
+
+  /// Lo invoca el handler de la acción "EMPEZAR YA" (con el proceso vivo). Lo
+  /// cablea SyncCoordinator para llamar a `PlaySessionService.startNow()`.
+  VoidCallback? onStartNowAction;
+
+  /// Lo invoca el handler de la acción "DETENER". Lo cablea SyncCoordinator
+  /// para llamar a `PlaySessionService.stopNow()`.
+  VoidCallback? onStopAction;
+
+  /// Lo invoca el handler de la acción "PAUSAR/REANUDAR". Lo cablea
+  /// SyncCoordinator para llamar a `PlaySessionService.togglePause()`.
+  VoidCallback? onPauseAction;
+
   static const AndroidNotificationChannel _channel = AndroidNotificationChannel(
     'rewards',
     'Recompensas',
     description: 'Logros, títulos y subidas de nivel',
     importance: Importance.high,
   );
+
+  // Canal de la notificación de sesión: importancia baja para que no suene ni
+  // vibre en cada actualización (es persistente, no un aviso puntual).
+  static const AndroidNotificationChannel _sessionChannel =
+      AndroidNotificationChannel(
+    'session',
+    'Partido en curso',
+    description: 'Cronómetro de la cancha y del partido',
+    importance: Importance.low,
+  );
+
+  void _onResponse(NotificationResponse response) {
+    if (response.actionId == kStartNowAction) onStartNowAction?.call();
+    if (response.actionId == kStopAction) onStopAction?.call();
+    if (response.actionId == kPauseAction) onPauseAction?.call();
+  }
 
   /// Inicializa el plugin y crea el canal Android. Idempotente. Best-effort:
   /// si algo falla, deja [_ready] en false y la app sigue sin push.
@@ -33,11 +84,13 @@ class NotificationsService {
       );
       await _plugin.initialize(
         const InitializationSettings(android: androidInit, iOS: iosInit),
+        onDidReceiveNotificationResponse: _onResponse,
+        onDidReceiveBackgroundNotificationResponse: notificationBackgroundHandler,
       );
-      await _plugin
-          .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
-          ?.createNotificationChannel(_channel);
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await android?.createNotificationChannel(_channel);
+      await android?.createNotificationChannel(_sessionChannel);
       _ready = true;
     } catch (_) {/* sin push: la app sigue con el banner in-app */}
   }
@@ -59,6 +112,21 @@ class NotificationsService {
     } catch (_) {/* ignorar */}
   }
 
+  /// True si la app tiene las notificaciones habilitadas por el SO. Sirve para
+  /// decidir si hace falta volver a pedir el permiso (y para diagnóstico).
+  Future<bool> isEnabled() async {
+    if (!_ready) await init();
+    if (!_ready) return false;
+    try {
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      if (android != null) {
+        return (await android.areNotificationsEnabled()) ?? false;
+      }
+    } catch (_) {/* ignorar */}
+    return true; // iOS u otra plataforma: asumimos habilitado.
+  }
+
   /// Muestra una notificación inmediata. Best-effort.
   Future<void> show(String title, String body) async {
     if (!_ready) await init();
@@ -75,6 +143,162 @@ class NotificationsService {
         iOS: DarwinNotificationDetails(),
       );
       await _plugin.show(_nextId++, title, body, details);
+    } catch (_) {/* ignorar */}
+  }
+
+  /// Notificación de sesión en estado "cuenta regresiva": muestra cuánto falta
+  /// para que arranque el partido (cronómetro nativo que baja solo hasta
+  /// [endsAt]) y un botón "EMPEZAR YA". Persistente (ongoing).
+  Future<void> showDwellCountdown(String court, DateTime endsAt) async {
+    if (!_ready) await init();
+    if (!_ready) return;
+    try {
+      final details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          'session',
+          'Partido en curso',
+          channelDescription: 'Cronómetro de la cancha y del partido',
+          importance: Importance.low,
+          priority: Priority.low,
+          ongoing: true,
+          autoCancel: false,
+          onlyAlertOnce: true,
+          usesChronometer: true,
+          chronometerCountDown: true,
+          when: endsAt.millisecondsSinceEpoch,
+          actions: const <AndroidNotificationAction>[
+            AndroidNotificationAction(
+              kStartNowAction,
+              'EMPEZAR YA',
+              showsUserInterface: false,
+              cancelNotification: false,
+            ),
+          ],
+        ),
+      );
+      await _plugin.show(
+        _sessionId,
+        court.isEmpty ? 'Estás en una cancha' : 'Estás en $court',
+        'Tu partido arranca solo · o tocá EMPEZAR YA',
+        details,
+      );
+    } catch (_) {/* ignorar */}
+  }
+
+  /// Notificación de sesión en estado "jugando": cronómetro nativo contando
+  /// hacia arriba desde [startedAt]. Persistente.
+  Future<void> showPlaying(String court, DateTime startedAt) async {
+    if (!_ready) await init();
+    if (!_ready) return;
+    try {
+      final details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          'session',
+          'Partido en curso',
+          channelDescription: 'Cronómetro de la cancha y del partido',
+          importance: Importance.low,
+          priority: Priority.low,
+          ongoing: true,
+          autoCancel: false,
+          onlyAlertOnce: true,
+          usesChronometer: true,
+          chronometerCountDown: false,
+          when: startedAt.millisecondsSinceEpoch,
+          actions: const <AndroidNotificationAction>[
+            AndroidNotificationAction(kPauseAction, 'PAUSAR',
+                showsUserInterface: false, cancelNotification: false),
+            AndroidNotificationAction(kStopAction, 'DETENER',
+                showsUserInterface: false, cancelNotification: false),
+          ],
+        ),
+      );
+      await _plugin.show(
+        _sessionId,
+        court.isEmpty ? 'Jugando' : 'Jugando en $court',
+        'Partido en curso',
+        details,
+      );
+    } catch (_) {/* ignorar */}
+  }
+
+  /// Notificación de sesión en estado "pausado": tiempo congelado (sin
+  /// cronómetro) y botón "REANUDAR" (+ "DETENER").
+  Future<void> showPaused(String court, int elapsedSeconds) async {
+    if (!_ready) await init();
+    if (!_ready) return;
+    final mm = (elapsedSeconds ~/ 60).toString().padLeft(2, '0');
+    final ss = (elapsedSeconds % 60).toString().padLeft(2, '0');
+    try {
+      final details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          'session',
+          'Partido en curso',
+          channelDescription: 'Cronómetro de la cancha y del partido',
+          importance: Importance.low,
+          priority: Priority.low,
+          ongoing: true,
+          autoCancel: false,
+          onlyAlertOnce: true,
+          actions: const <AndroidNotificationAction>[
+            AndroidNotificationAction(kPauseAction, 'REANUDAR',
+                showsUserInterface: false, cancelNotification: false),
+            AndroidNotificationAction(kStopAction, 'DETENER',
+                showsUserInterface: false, cancelNotification: false),
+          ],
+        ),
+      );
+      await _plugin.show(
+        _sessionId,
+        court.isEmpty ? 'Partido pausado' : 'Pausado · $court',
+        'Cronómetro en $mm:$ss',
+        details,
+      );
+    } catch (_) {/* ignorar */}
+  }
+
+  /// Notificación de sesión en estado "saliste del radio": cronómetro nativo
+  /// que baja hasta [endsAt] (cuando se cierra solo) y botón "DETENER".
+  Future<void> showEndingCountdown(String court, DateTime endsAt) async {
+    if (!_ready) await init();
+    if (!_ready) return;
+    try {
+      final details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          'session',
+          'Partido en curso',
+          channelDescription: 'Cronómetro de la cancha y del partido',
+          importance: Importance.low,
+          priority: Priority.low,
+          ongoing: true,
+          autoCancel: false,
+          onlyAlertOnce: true,
+          usesChronometer: true,
+          chronometerCountDown: true,
+          when: endsAt.millisecondsSinceEpoch,
+          actions: const <AndroidNotificationAction>[
+            AndroidNotificationAction(
+              kStopAction,
+              'DETENER',
+              showsUserInterface: false,
+              cancelNotification: false,
+            ),
+          ],
+        ),
+      );
+      await _plugin.show(
+        _sessionId,
+        court.isEmpty ? 'Saliste de la cancha' : 'Saliste de $court',
+        'El partido se cierra solo · o tocá DETENER',
+        details,
+      );
+    } catch (_) {/* ignorar */}
+  }
+
+  /// Quita la notificación de sesión (al volver a la app o terminar el partido).
+  Future<void> cancelSession() async {
+    if (!_ready) return;
+    try {
+      await _plugin.cancel(_sessionId);
     } catch (_) {/* ignorar */}
   }
 }

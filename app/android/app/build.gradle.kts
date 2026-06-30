@@ -11,6 +11,20 @@ val localProps = Properties()
 val localPropsFile = rootProject.file("local.properties")
 if (localPropsFile.exists()) localPropsFile.inputStream().use { localProps.load(it) }
 
+// API key del mapa nativo. Fuente única: dart_defines.json (la misma que usa
+// `--dart-define-from-file`). local.properties la puede sobreescribir por equipo.
+fun resolveMapsApiKey(): String {
+    val fromLocal = localProps.getProperty("MAPS_API_KEY")
+    if (!fromLocal.isNullOrBlank()) return fromLocal
+    // rootProject es app/android → el repo root (1of1) está 2 niveles arriba.
+    val dartDefines = rootProject.file("../../dart_defines.json")
+    if (dartDefines.exists()) {
+        val m = Regex("\"MAPS_API_KEY\"\\s*:\\s*\"([^\"]+)\"").find(dartDefines.readText())
+        if (m != null) return m.groupValues[1]
+    }
+    return ""
+}
+
 android {
     namespace = "com.example.triplesapp"
     compileSdk = flutter.compileSdkVersion
@@ -37,7 +51,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["MAPS_API_KEY"] = localProps.getProperty("MAPS_API_KEY", "")
+        manifestPlaceholders["MAPS_API_KEY"] = resolveMapsApiKey()
     }
 
     buildTypes {

@@ -48,6 +48,7 @@ enum AchievementMetric {
   horas,
   entrenamientos,
   victoriasAnio, // victorias en los últimos 365 días
+  nivel, // nivel del jugador (según puntos)
 }
 
 /// Snapshot de las estadísticas del jugador para evaluar logros.
@@ -59,6 +60,7 @@ class PlayStats {
   final int segundos;
   final int entrenamientos;
   final int victoriasAnio;
+  final int nivel;
 
   const PlayStats({
     required this.partidos,
@@ -68,6 +70,7 @@ class PlayStats {
     required this.segundos,
     required this.entrenamientos,
     required this.victoriasAnio,
+    this.nivel = 1,
   });
 
   int value(AchievementMetric m) => switch (m) {
@@ -78,6 +81,7 @@ class PlayStats {
         AchievementMetric.horas => segundos ~/ 3600,
         AchievementMetric.entrenamientos => entrenamientos,
         AchievementMetric.victoriasAnio => victoriasAnio,
+        AchievementMetric.nivel => nivel,
       };
 }
 
@@ -258,6 +262,72 @@ const List<Achievement> kAchievements = [
     metric: AchievementMetric.entrenamientos,
     goal: 30,
   ),
+  // ── Logros por nivel (suben al acumular puntos) ──────────────────────────
+  Achievement(
+    id: 'level_5',
+    name: 'En ascenso',
+    desc: 'Alcanzá el nivel 5',
+    icon: Icons.trending_up,
+    metric: AchievementMetric.nivel,
+    goal: 5,
+  ),
+  Achievement(
+    id: 'level_10',
+    name: 'Subiendo fuerte',
+    desc: 'Alcanzá el nivel 10',
+    icon: Icons.stairs,
+    metric: AchievementMetric.nivel,
+    goal: 10,
+  ),
+  Achievement(
+    id: 'level_20',
+    name: 'Elite',
+    desc: 'Alcanzá el nivel 20',
+    icon: Icons.workspace_premium,
+    metric: AchievementMetric.nivel,
+    goal: 20,
+  ),
+  Achievement(
+    id: 'level_30',
+    name: 'Cúspide',
+    desc: 'Alcanzá el nivel 30',
+    icon: Icons.diamond,
+    metric: AchievementMetric.nivel,
+    goal: 30,
+  ),
+  // ── Logros extra ─────────────────────────────────────────────────────────
+  Achievement(
+    id: 'courts_10',
+    name: 'Andariego',
+    desc: 'Jugá en 10 canchas diferentes',
+    icon: Icons.travel_explore,
+    metric: AchievementMetric.canchas,
+    goal: 10,
+  ),
+  Achievement(
+    id: 'hours_100',
+    name: 'Sin cansancio',
+    desc: 'Acumulá 100 horas jugadas',
+    icon: Icons.all_inclusive,
+    metric: AchievementMetric.horas,
+    goal: 100,
+  ),
+  Achievement(
+    id: 'streak_15',
+    name: 'Racha histórica',
+    desc: 'Conseguí una racha de 15 victorias',
+    icon: Icons.whatshot,
+    metric: AchievementMetric.racha,
+    goal: 15,
+  ),
+  Achievement(
+    id: 'wins_year_25',
+    name: 'Año soñado',
+    desc: 'Ganá 25 partidos en un año',
+    icon: Icons.calendar_month,
+    metric: AchievementMetric.victoriasAnio,
+    goal: 25,
+  ),
 ];
 
 Achievement? achievementById(String id) {
@@ -334,6 +404,16 @@ const List<GameTitle> kTitles = [
       rarity: TitleRarity.legendario),
   GameTitle('El Elegido', ['play_100', 'wins_100'],
       rarity: TitleRarity.legendario),
+  // ── Títulos por nivel ────────────────────────────────────────────────────
+  GameTitle('Aspirante', ['level_5'], rarity: TitleRarity.raro),
+  GameTitle('Figura', ['level_10'], rarity: TitleRarity.epico),
+  GameTitle('Crack del barrio', ['level_20'], rarity: TitleRarity.epico),
+  GameTitle('Hall of Fame', ['level_30'], rarity: TitleRarity.legendario),
+  // ── Títulos extra ────────────────────────────────────────────────────────
+  GameTitle('Caminante', ['courts_10'], rarity: TitleRarity.raro),
+  GameTitle('Fuego eterno', ['streak_15'], rarity: TitleRarity.legendario),
+  GameTitle('Inmortal', ['hours_100'], rarity: TitleRarity.legendario),
+  GameTitle('Goleador del año', ['wins_year_25'], rarity: TitleRarity.epico),
 ];
 
 /// Busca un título por su nombre (para resolver su rareza/color al mostrarlo).

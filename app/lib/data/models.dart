@@ -65,6 +65,8 @@ abstract class Profile with _$Profile {
     @Default('') String clanTextColor,
     // Familia tipográfica del clan (nombre de Google Fonts). Vacío = default.
     @Default('') String clanFont,
+    // Marco del avatar (id de cosmetics.kFrames). Vacío = sin marco.
+    @Default('') String avatarFrame,
     // Título equipado (se desbloquea con logros). Visible para los amigos.
     @Default('') String title,
     // Nivel del jugador (según puntos). Se guarda para que lo vean los amigos.
@@ -121,6 +123,7 @@ abstract class Profile with _$Profile {
       avatarColor: NotionService.readText(p, 'AvatarColor'),
       clanTextColor: NotionService.readText(p, 'ClanTextColor'),
       clanFont: NotionService.readText(p, 'ClanFont'),
+      avatarFrame: NotionService.readText(p, 'AvatarFrame'),
       title: NotionService.readText(p, 'EquippedTitle'),
       level: NotionService.readText(p, 'Level'),
       unlockedBadges: NotionService.readMultiSelect(p, 'UnlockedBadges'),
@@ -156,6 +159,7 @@ abstract class Profile with _$Profile {
       'AvatarColor': NotionService.richText(avatarColor),
       'ClanTextColor': NotionService.richText(clanTextColor),
       'ClanFont': NotionService.richText(clanFont),
+      'AvatarFrame': NotionService.richText(avatarFrame),
       'EquippedTitle': NotionService.richText(title),
       'Level': NotionService.richText(level),
       'UnlockedBadges': NotionService.multiSelect(unlockedBadges),

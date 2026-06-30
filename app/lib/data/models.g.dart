@@ -27,6 +27,7 @@ _Profile _$ProfileFromJson(Map<String, dynamic> json) => _Profile(
   avatarColor: json['avatarColor'] as String? ?? '',
   clanTextColor: json['clanTextColor'] as String? ?? '',
   clanFont: json['clanFont'] as String? ?? '',
+  avatarFrame: json['avatarFrame'] as String? ?? '',
   title: json['title'] as String? ?? '',
   level: json['level'] as String? ?? '',
   unlockedBadges:
@@ -65,6 +66,7 @@ Map<String, dynamic> _$ProfileToJson(_Profile instance) => <String, dynamic>{
   'avatarColor': instance.avatarColor,
   'clanTextColor': instance.clanTextColor,
   'clanFont': instance.clanFont,
+  'avatarFrame': instance.avatarFrame,
   'title': instance.title,
   'level': instance.level,
   'unlockedBadges': instance.unlockedBadges,

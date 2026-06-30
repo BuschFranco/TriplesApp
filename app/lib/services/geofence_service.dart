@@ -5,7 +5,7 @@ import '../data/courts.dart';
 import 'notifications_service.dart';
 
 /// Radio (m) de cada geofence de cancha. Igual al de la detección por dwell.
-const double kCourtGeofenceRadius = 80;
+const double kCourtGeofenceRadius = 110;
 
 /// Nombre del puerto con el que el isolate principal recibe los eventos de
 /// geofence desde el isolate de background.
