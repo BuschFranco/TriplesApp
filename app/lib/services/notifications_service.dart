@@ -149,9 +149,19 @@ class NotificationsService {
   /// Notificación de sesión en estado "cuenta regresiva": muestra cuánto falta
   /// para que arranque el partido (cronómetro nativo que baja solo hasta
   /// [endsAt]) y un botón "EMPEZAR YA". Persistente (ongoing).
-  Future<void> showDwellCountdown(String court, DateTime endsAt) async {
+  Future<void> showDwellCountdown(String court, int remainingSeconds) async {
     if (!_ready) await init();
     if (!_ready) return;
+    // Texto ESTÁTICO (no usamos el cronómetro nativo): el cronómetro del sistema
+    // corre solo y, si Android suspende la app, sigue bajando hasta números
+    // negativos. Con texto estático la app lo actualiza mientras está viva y, si
+    // el SO la suspende, queda congelado en el último valor (nunca negativo).
+    final rem = remainingSeconds < 0 ? 0 : remainingSeconds;
+    final mm = rem ~/ 60;
+    final ss = (rem % 60).toString().padLeft(2, '0');
+    final body = rem > 0
+        ? 'Tu partido arranca en $mm:$ss · o tocá EMPEZAR YA'
+        : 'Arrancando tu partido…';
     try {
       final details = NotificationDetails(
         android: AndroidNotificationDetails(
@@ -163,9 +173,6 @@ class NotificationsService {
           ongoing: true,
           autoCancel: false,
           onlyAlertOnce: true,
-          usesChronometer: true,
-          chronometerCountDown: true,
-          when: endsAt.millisecondsSinceEpoch,
           actions: const <AndroidNotificationAction>[
             AndroidNotificationAction(
               kStartNowAction,
@@ -179,7 +186,7 @@ class NotificationsService {
       await _plugin.show(
         _sessionId,
         court.isEmpty ? 'Estás en una cancha' : 'Estás en $court',
-        'Tu partido arranca solo · o tocá EMPEZAR YA',
+        body,
         details,
       );
     } catch (_) {/* ignorar */}
@@ -207,8 +214,11 @@ class NotificationsService {
           actions: const <AndroidNotificationAction>[
             AndroidNotificationAction(kPauseAction, 'PAUSAR',
                 showsUserInterface: false, cancelNotification: false),
+            // DETENER abre la app: la acción en background es no-op (corre en un
+            // isolate aparte sin acceso al partido vivo) y, además, al detener
+            // hay que mostrar el diálogo "¿Cómo te fue?", que necesita la UI.
             AndroidNotificationAction(kStopAction, 'DETENER',
-                showsUserInterface: false, cancelNotification: false),
+                showsUserInterface: true, cancelNotification: false),
           ],
         ),
       );
@@ -242,8 +252,9 @@ class NotificationsService {
           actions: const <AndroidNotificationAction>[
             AndroidNotificationAction(kPauseAction, 'REANUDAR',
                 showsUserInterface: false, cancelNotification: false),
+            // DETENER abre la app (ver nota en showPlaying).
             AndroidNotificationAction(kStopAction, 'DETENER',
-                showsUserInterface: false, cancelNotification: false),
+                showsUserInterface: true, cancelNotification: false),
           ],
         ),
       );

@@ -75,7 +75,7 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   // el cuándo. Solo se muestra con la app en segundo plano: en foreground manda
   // el banner in-app.
   /// Mostrar la cuenta regresiva (cancha, momento en que arranca el partido).
-  void Function(String courtName, DateTime endsAt)? onDwellNotif;
+  void Function(String courtName, int remainingSeconds)? onDwellNotif;
 
   /// Mostrar el partido en curso (cancha, momento de inicio).
   void Function(String courtName, DateTime startedAt)? onPlayingNotif;
@@ -112,7 +112,7 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
             _courtName ?? '', DateTime.now().subtract(Duration(seconds: _elapsed)));
       }
     } else if (isDwelling) {
-      onDwellNotif?.call(dwellCourtName ?? '', _dwellSince!.add(dwellThreshold));
+      onDwellNotif?.call(dwellCourtName ?? '', dwellRemainingSeconds);
     } else {
       onClearSessionNotif?.call();
     }
@@ -348,10 +348,14 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
       !isPlaying && _dwellCourtId != null && _dwellSince != null;
 
   /// Nombre de la cancha candidata durante la cuenta regresiva de permanencia.
-  String? get dwellCourtName {
-    if (_dwellCourtId == null) return null;
+  String? get dwellCourtName => _dwellCourt?.name;
+
+  /// Cancha candidata (objeto) durante la cuenta regresiva de permanencia.
+  Court? get _dwellCourt {
+    final id = _dwellCourtId;
+    if (id == null) return null;
     for (final c in _courts) {
-      if (c.id == _dwellCourtId) return c.name;
+      if (c.id == id) return c;
     }
     return null;
   }
@@ -667,6 +671,9 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
       // Volvimos a la app: limpiamos la notif de sesión (manda el banner in-app).
       _foreground = true;
       _renderSessionNotif();
+      // Re-evaluamos ya: si la permanencia venció mientras estábamos en segundo
+      // plano, arranca el partido al instante en vez de esperar la próxima muestra.
+      if (isDwelling) _sample();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached ||
         state == AppLifecycleState.hidden) {
@@ -715,7 +722,14 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     if (defaultTargetPlatform == TargetPlatform.android) {
       settings = AndroidSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 8,
+        // distanceFilter 0 + intervalo de tiempo: en segundo plano el ticker de
+        // 1s está suspendido, así que la detección depende SOLO de este stream.
+        // Con un filtro por distancia, parado y quieto (justo el caso del dwell)
+        // no llegan updates y la cuenta regresiva de inicio nunca se resuelve.
+        // Pidiendo updates por tiempo, _evaluate corre periódicamente y el
+        // partido arranca a los 6 min aunque estés inmóvil.
+        distanceFilter: 0,
+        intervalDuration: const Duration(seconds: 10),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationTitle: '1of1',
           notificationText: 'Detección de cancha activa',
@@ -756,9 +770,16 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
       }
       notifyListeners();
     } else if (isDwelling) {
-      // Sin partido todavía, pero acumulando permanencia: refrescamos cada
-      // segundo para que la cuenta regresiva del cronómetro baje en vivo.
-      notifyListeners();
+      // Sin partido todavía, pero acumulando permanencia. Si ya se cumplió el
+      // umbral, arrancamos el partido sin esperar una muestra nueva de GPS (así
+      // la notif pasa de la cuenta regresiva a "partido en curso" en el momento
+      // justo, sin contar números negativos). Si no, refrescamos la cuenta.
+      final ready = dwellRemainingSeconds <= 0 ? _dwellCourt : null;
+      if (ready != null) {
+        _startSession(ready);
+      } else {
+        notifyListeners();
+      }
     }
     _tickCount++;
     if (_tickCount % _sampleEvery.inSeconds == 0) _sample();
@@ -864,6 +885,11 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
       _dwellCourtId = null;
       _dwellSince = null;
       if (wasDwelling) _renderSessionNotif();
+      // Ya no hay nada que detectar de cerca y no estamos jugando: si el usuario
+      // NO tiene background activado, cortamos el foreground-service (lo
+      // prendimos para el dwell/partido). Con background on lo gobierna la
+      // geofence, no lo tocamos.
+      if (!_background) _stopStream();
       return;
     }
 
@@ -873,12 +899,24 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     } else if (_dwellSince != null &&
         DateTime.now().difference(_dwellSince!) >= dwellThreshold) {
       _startSession(near);
+    } else {
+      // Misma cancha, todavía por debajo del umbral: refrescamos la cuenta
+      // regresiva de la notificación (texto estático "Arranca en M:SS").
+      _renderSessionNotif();
     }
   }
 
   void _beginDwell(Court c) {
     _dwellCourtId = c.id;
     _dwellSince = DateTime.now();
+    // Arrancamos el foreground-service de ubicación apenas empieza la
+    // permanencia. Así, aunque se minimice la app, el isolate sigue vivo y
+    // _evaluate corre periódicamente: el partido arranca solo a los 6 min y la
+    // notificación pasa de la cuenta regresiva a "partido en curso" sin que el
+    // usuario tenga que abrir la app. (Antes solo se prendía con la geofence y
+    // la preferencia de background; si el dwell empezaba con la app abierta, al
+    // minimizar quedaba congelado y el cronómetro contaba en negativo.)
+    _startStream();
     _renderSessionNotif();
   }
 
@@ -945,6 +983,12 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     _pausedAt = null;
     _pausedSeconds = 0;
     _outsideSince = null;
+    // Reseteamos también la permanencia: al terminar un partido (manual o por
+    // salir del radio) NO queremos arrancar otro al instante con el dwell viejo
+    // ya vencido. Así, si seguís dentro de la cancha, empieza de nuevo la cuenta
+    // regresiva de 6 min para el próximo partido.
+    _dwellCourtId = null;
+    _dwellSince = null;
     _clearActive();
     _renderSessionNotif();
     notifyListeners();

@@ -102,8 +102,8 @@ class SyncCoordinator {
     };
 
     // Notificación de sesión (cronómetro persistente con la app minimizada).
-    _play.onDwellNotif = (court, endsAt) =>
-        NotificationsService.instance.showDwellCountdown(court, endsAt);
+    _play.onDwellNotif = (court, remainingSeconds) =>
+        NotificationsService.instance.showDwellCountdown(court, remainingSeconds);
     _play.onPlayingNotif = (court, startedAt) =>
         NotificationsService.instance.showPlaying(court, startedAt);
     _play.onEndingNotif = (court, endsAt) =>

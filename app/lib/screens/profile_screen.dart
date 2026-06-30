@@ -529,11 +529,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (recent.isEmpty) return levelCard;
 
     const cardH = 48.0; // alto de cada carta
-    const peek = 22.0; // cuánto asoma cada carta por debajo de la anterior
+    const peek = 34.0; // cuánto asoma cada carta por debajo de la anterior
     const overlap = 14.0; // cuánto se mete la 1ra carta debajo del nivel
-    // Más angostas y más transparentes hacia el final.
+    // Más angostas y más transparentes hacia el final (pero el último todavía
+    // legible: asoma lo suficiente para ver su info).
     const widths = [0.94, 0.85, 0.76];
-    const opacities = [1.0, 0.5, 0.18];
+    const opacities = [1.0, 0.62, 0.34];
 
     final n = recent.length;
     final stackH = cardH + peek * (n - 1);
