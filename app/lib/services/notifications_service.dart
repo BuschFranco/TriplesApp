@@ -152,16 +152,8 @@ class NotificationsService {
   Future<void> showDwellCountdown(String court, int remainingSeconds) async {
     if (!_ready) await init();
     if (!_ready) return;
-    // Texto ESTÁTICO (no usamos el cronómetro nativo): el cronómetro del sistema
-    // corre solo y, si Android suspende la app, sigue bajando hasta números
-    // negativos. Con texto estático la app lo actualiza mientras está viva y, si
-    // el SO la suspende, queda congelado en el último valor (nunca negativo).
-    final rem = remainingSeconds < 0 ? 0 : remainingSeconds;
-    final mm = rem ~/ 60;
-    final ss = (rem % 60).toString().padLeft(2, '0');
-    final body = rem > 0
-        ? 'Tu partido arranca en $mm:$ss · o tocá EMPEZAR YA'
-        : 'Arrancando tu partido…';
+    // Solo un mensaje, sin contador.
+    const body = 'Tu partido va a arrancar solo · o tocá EMPEZAR YA';
     try {
       final details = NotificationDetails(
         android: AndroidNotificationDetails(
@@ -174,12 +166,11 @@ class NotificationsService {
           autoCancel: false,
           onlyAlertOnce: true,
           actions: const <AndroidNotificationAction>[
-            AndroidNotificationAction(
-              kStartNowAction,
-              'EMPEZAR YA',
-              showsUserInterface: false,
-              cancelNotification: false,
-            ),
+            // showsUserInterface: true → abre la app y ejecuta la acción en el
+            // isolate principal (el handler de background es no-op y no puede
+            // tocar el partido en curso).
+            AndroidNotificationAction(kStartNowAction, 'EMPEZAR YA',
+                showsUserInterface: true, cancelNotification: false),
           ],
         ),
       );
@@ -208,15 +199,11 @@ class NotificationsService {
           ongoing: true,
           autoCancel: false,
           onlyAlertOnce: true,
-          usesChronometer: true,
-          chronometerCountDown: false,
-          when: startedAt.millisecondsSinceEpoch,
           actions: const <AndroidNotificationAction>[
+            // Todas abren la app: la acción en background es un no-op (corre en
+            // un isolate aparte, sin acceso al partido vivo).
             AndroidNotificationAction(kPauseAction, 'PAUSAR',
-                showsUserInterface: false, cancelNotification: false),
-            // DETENER abre la app: la acción en background es no-op (corre en un
-            // isolate aparte sin acceso al partido vivo) y, además, al detener
-            // hay que mostrar el diálogo "¿Cómo te fue?", que necesita la UI.
+                showsUserInterface: true, cancelNotification: false),
             AndroidNotificationAction(kStopAction, 'DETENER',
                 showsUserInterface: true, cancelNotification: false),
           ],
@@ -236,8 +223,6 @@ class NotificationsService {
   Future<void> showPaused(String court, int elapsedSeconds) async {
     if (!_ready) await init();
     if (!_ready) return;
-    final mm = (elapsedSeconds ~/ 60).toString().padLeft(2, '0');
-    final ss = (elapsedSeconds % 60).toString().padLeft(2, '0');
     try {
       final details = NotificationDetails(
         android: AndroidNotificationDetails(
@@ -250,9 +235,9 @@ class NotificationsService {
           autoCancel: false,
           onlyAlertOnce: true,
           actions: const <AndroidNotificationAction>[
+            // Todas abren la app (ver nota en showPlaying).
             AndroidNotificationAction(kPauseAction, 'REANUDAR',
-                showsUserInterface: false, cancelNotification: false),
-            // DETENER abre la app (ver nota en showPlaying).
+                showsUserInterface: true, cancelNotification: false),
             AndroidNotificationAction(kStopAction, 'DETENER',
                 showsUserInterface: true, cancelNotification: false),
           ],
@@ -261,7 +246,7 @@ class NotificationsService {
       await _plugin.show(
         _sessionId,
         court.isEmpty ? 'Partido pausado' : 'Pausado · $court',
-        'Cronómetro en $mm:$ss',
+        'Partido en pausa · tocá REANUDAR para seguir',
         details,
       );
     } catch (_) {/* ignorar */}
@@ -283,14 +268,11 @@ class NotificationsService {
           ongoing: true,
           autoCancel: false,
           onlyAlertOnce: true,
-          usesChronometer: true,
-          chronometerCountDown: true,
-          when: endsAt.millisecondsSinceEpoch,
           actions: const <AndroidNotificationAction>[
             AndroidNotificationAction(
               kStopAction,
               'DETENER',
-              showsUserInterface: false,
+              showsUserInterface: true,
               cancelNotification: false,
             ),
           ],
@@ -299,7 +281,7 @@ class NotificationsService {
       await _plugin.show(
         _sessionId,
         court.isEmpty ? 'Saliste de la cancha' : 'Saliste de $court',
-        'El partido se cierra solo · o tocá DETENER',
+        'Si no volvés, el partido se cierra solo · o tocá DETENER',
         details,
       );
     } catch (_) {/* ignorar */}

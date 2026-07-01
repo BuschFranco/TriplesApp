@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
+import 'dart:ui';
+import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -7,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/achievements.dart';
 import '../data/courts.dart';
 import '../theme/app_theme.dart';
+import 'session_alarms.dart';
 
 /// Detecta automáticamente cuándo el usuario está "jugando" en una cancha:
 /// si permanece dentro de [radiusMeters] de una cancha durante [dwellThreshold],
@@ -15,8 +19,12 @@ import '../theme/app_theme.dart';
 /// Fase 1 (foreground): muestrea la ubicación cada [_sampleEvery] mientras la
 /// app está abierta. El tiempo activo se persiste cada 60s para no perderlo.
 class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
-  static const double radiusMeters = 110;
+  static const double radiusMeters = 125;
   static const Duration dwellThreshold = Duration(minutes: 6);
+  // Tolerancia a saltos de GPS: al salir del radio (durante la cuenta de inicio)
+  // o al re-entrar (durante la cuenta de cierre), esperamos este tiempo continuo
+  // antes de resetear/cancelar, para que un salto accidental no reinicie nada.
+  static const Duration gpsJitterGrace = Duration(seconds: 7);
   // Período de gracia de salida: con una sesión activa, el partido NO se corta
   // apenas el GPS te ubica fuera del radio. Recién se cierra si seguís fuera de
   // forma continua durante este tiempo (tolera saltos de señal y pausas cortas).
@@ -28,6 +36,12 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   // lineal desde x1.0 al empezar hasta [maxMultiplier] al llegar a [multiplierCap].
   static const Duration multiplierCap = Duration(minutes: 90);
   static const double maxMultiplier = 1.8;
+  // El tiempo deja de sumar puntos a partir de acá (~2h, un partido
+  // profesional). Cap silencioso: no se muestra en la UI.
+  static const Duration pointsTimeCap = Duration(hours: 2);
+  // Con la batería en este nivel (o menos) y sin cargar, cerramos el partido en
+  // curso para proteger la información antes de que el SO mate la app.
+  static const int batteryEndPercent = 5;
   static const Duration _sampleEvery = Duration(seconds: 10);
   // Cada cuánto se suben los agregados a Notion (batch). El historial y los
   // favoritos NO se suben: quedan locales.
@@ -54,6 +68,12 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   List<Court> _courts = const [];
   Timer? _ticker;
   StreamSubscription<Position>? _posSub;
+  // Puerto para que el isolate de las alarmas (arranque/cierre en background)
+  // le avise a este isolate que reconcilie el estado desde prefs.
+  ReceivePort? _playPort;
+  // Batería: para cerrar el partido si el equipo queda con muy poca carga.
+  final Battery _battery = Battery();
+  bool _batteryChecking = false;
   bool _background = false;
 
   /// Si el usuario habilitó la detección en segundo plano.
@@ -64,8 +84,9 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   void Function(bool playing, String courtId, DateTime? since)? onPresenceChanged;
 
   /// Terminó un partido válido (>= [minMatch]) que queda pendiente de resultado.
-  /// Incluye la cancha y el momento de fin (para registrar el "último partido").
-  void Function(String courtId, DateTime endedAt)? onMatchEnded;
+  /// Incluye la cancha, el momento de fin (para el "último partido") y si se
+  /// cerró por batería baja (para avisar distinto).
+  void Function(String courtId, DateTime endedAt, bool lowBattery)? onMatchEnded;
 
   /// Se descartó un partido por durar menos de [minMatch]: no se registró nada.
   void Function(String courtName, int seconds)? onMatchDiscarded;
@@ -132,10 +153,17 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   // Permanencia: cancha candidata y desde cuándo estamos cerca.
   String? _dwellCourtId;
   DateTime? _dwellSince;
+  // Durante la permanencia, desde cuándo venimos leyendo FUERA de la cancha del
+  // dwell. Toleramos [gpsJitterGrace] antes de resetear la cuenta de inicio.
+  DateTime? _dwellOutsideSince;
 
   // Gracia de salida: desde cuándo estamos fuera del radio teniendo una sesión
   // activa. null = estamos dentro. Al superar [exitGrace] se corta el partido.
   DateTime? _outsideSince;
+  // Durante la gracia de salida, desde cuándo venimos leyendo DE VUELTA adentro.
+  // Toleramos [gpsJitterGrace] antes de cancelar el cierre (evita que un salto
+  // de GPS cancele la cuenta de fin).
+  DateTime? _insideSince;
 
   // Sesión activa.
   String? _courtId;
@@ -320,6 +348,15 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   /// Multiplicador actual del partido en curso (en vivo).
   double get currentMultiplier => multiplierFor(_elapsed);
 
+  /// Puntos por tiempo acumulados hasta ahora en el partido en curso (misma
+  /// fórmula que al resolver: minutos topados a [pointsTimeCap] × multiplicador).
+  /// No incluye los bonus de resultado/racha/cancha nueva (esos van al cerrar).
+  int get currentTimePoints {
+    final secs =
+        _elapsed > pointsTimeCap.inSeconds ? pointsTimeCap.inSeconds : _elapsed;
+    return ((secs ~/ 60) * multiplierFor(secs)).round();
+  }
+
   /// True si el cronómetro del partido está pausado.
   bool get isPaused => _pausedAt != null;
 
@@ -351,13 +388,77 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   String? get dwellCourtName => _dwellCourt?.name;
 
   /// Cancha candidata (objeto) durante la cuenta regresiva de permanencia.
-  Court? get _dwellCourt {
-    final id = _dwellCourtId;
+  Court? get _dwellCourt => _courtById(_dwellCourtId);
+
+  /// Cancha del partido en curso (objeto).
+  Court? get _playingCourt => _courtById(_courtId);
+
+  Court? _courtById(String? id) {
     if (id == null) return null;
     for (final c in _courts) {
       if (c.id == id) return c;
     }
     return null;
+  }
+
+  /// Registra el puerto por el que el isolate de las alarmas nos pide reconciliar.
+  void _registerPlayPort() {
+    if (_playPort != null) return;
+    IsolateNameServer.removePortNameMapping(kPlayPortName);
+    _playPort = ReceivePort();
+    IsolateNameServer.registerPortWithName(_playPort!.sendPort, kPlayPortName);
+    _playPort!.listen((_) => reconcileFromPrefs());
+  }
+
+  /// Adopta el estado que una alarma de background pudo haber escrito (arranque
+  /// o cierre automático del partido) mientras la app estaba dormida/cerrada.
+  Future<void> reconcileFromPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final activeRaw = prefs.getString(_kActive);
+    final pendingRaw = prefs.getString(_kPending);
+
+    // 1) Arranque automático: la alarma dejó una sesión activa y no estábamos
+    // jugando → adoptarla.
+    if (!isPlaying && activeRaw != null) {
+      try {
+        final j = jsonDecode(activeRaw) as Map<String, dynamic>;
+        final start = DateTime.fromMillisecondsSinceEpoch(
+            (j['startMillis'] as num).toInt());
+        if (DateTime.now().difference(start) <= const Duration(hours: 6)) {
+          _courtId = j['courtId'] as String?;
+          _courtName = j['courtName'] as String?;
+          _startedAt = start;
+          _elapsed = DateTime.now().difference(start).inSeconds;
+          _lastSavedAt = _elapsed;
+          _accrued = 0;
+          _dwellCourtId = null;
+          _dwellSince = null;
+          _outsideSince = null;
+          _pausedAt = null;
+          _pausedSeconds = 0;
+          unawaited(cancelStartAlarm());
+          _renderSessionNotif();
+          notifyListeners();
+        }
+      } catch (_) {}
+    }
+
+    // 2) Cierre automático: creíamos estar jugando pero la alarma ya borró la
+    // sesión activa → cerrar en memoria.
+    if (isPlaying && activeRaw == null) {
+      _resetLiveSession();
+    }
+
+    // 3) Pendiente de resultado dejado por la alarma → adoptarlo (dispara el
+    // diálogo "¿Cómo te fue?").
+    if (!isPlaying && _pendingSession == null && pendingRaw != null) {
+      try {
+        _pendingSession = PlaySession.fromJson(
+            jsonDecode(pendingRaw) as Map<String, dynamic>);
+        notifyListeners();
+      } catch (_) {}
+    }
   }
 
   /// Segundos que faltan para que el partido arranque solo. Si no hay
@@ -489,8 +590,15 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     // Fijamos el usuario y limpiamos cualquier estado en memoria del anterior:
     // el restore lee solo las claves de ESTE usuario.
     _userKey = userKey;
+    // Persistimos el userKey para que el isolate de las alarmas arme las mismas
+    // claves namespaced, y registramos el puerto de reconciliación.
+    _registerPlayPort();
+    unawaited(SharedPreferences.getInstance()
+        .then((p) => p.setString(kBgUserKey, userKey)));
     _resetState();
     await _restore();
+    // Por si una alarma arrancó/cerró un partido mientras la app estaba cerrada.
+    await reconcileFromPrefs();
 
     // Sembrado desde Notion: nunca por debajo de lo que ya hay en la nube.
     var seeded = false;
@@ -550,16 +658,12 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _syncTimer ??= Timer.periodic(_syncEvery, (_) => _flush());
 
-    LocationPermission perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied) {
-      perm = await Geolocator.requestPermission();
-    }
-    if (perm == LocationPermission.denied ||
-        perm == LocationPermission.deniedForever) {
-      return;
-    }
+    // NO pedimos permiso de ubicación acá: lo pide el modal de permisos cuando
+    // el usuario activa el switch. Arrancamos el ticker igual: si todavía no hay
+    // permiso, las muestras fallan (silenciosas) y empiezan a funcionar en
+    // cuanto se conceda, sin reiniciar la app.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
-    _sample(); // primera muestra inmediata
+    _sample(); // primera muestra inmediata (si hay permiso)
     // El foreground service (con su notificación) ya NO arranca acá: ahora lo
     // gobierna el geofencing (enter de una cancha → enterCourtArea). Con la app
     // abierta, el ticker de arriba ya detecta sin servicio en primer plano.
@@ -610,8 +714,10 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     _pausedAt = null;
     _pausedSeconds = 0;
     _outsideSince = null;
+    _insideSince = null;
     _dwellCourtId = null;
     _dwellSince = null;
+    _dwellOutsideSince = null;
     _mock = null;
   }
 
@@ -670,6 +776,8 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       // Volvimos a la app: limpiamos la notif de sesión (manda el banner in-app).
       _foreground = true;
+      // Adoptamos lo que una alarma pudo haber arrancado/cerrado en background.
+      unawaited(reconcileFromPrefs());
       _renderSessionNotif();
       // Re-evaluamos ya: si la permanencia venció mientras estábamos en segundo
       // plano, arranca el partido al instante en vez de esperar la próxima muestra.
@@ -708,14 +816,11 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   /// ticker con getCurrentPosition (funciona aunque estés quieto).
   Future<void> _startStream() async {
     if (_posSub != null) return;
-    // Un solo pedido de permiso: si ya está concedido (aunque sea "mientras se
-    // usa"), arrancamos el servicio en primer plano sin volver a preguntar.
-    LocationPermission perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied) {
-      perm = await Geolocator.requestPermission();
-    }
-    if (perm == LocationPermission.denied ||
-        perm == LocationPermission.deniedForever) {
+    // NO pedimos permiso acá (lo pide el modal). Solo arrancamos el servicio en
+    // primer plano si el permiso ya está concedido.
+    final perm = await Geolocator.checkPermission();
+    if (perm != LocationPermission.always &&
+        perm != LocationPermission.whileInUse) {
       return;
     }
     final LocationSettings settings;
@@ -769,6 +874,8 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
       notifyListeners();
+      // Cada ~20s revisamos la batería: si quedó muy baja, cerramos el partido.
+      if (_tickCount % 20 == 0) unawaited(_maybeEndForLowBattery());
     } else if (isDwelling) {
       // Sin partido todavía, pero acumulando permanencia. Si ya se cumplió el
       // umbral, arrancamos el partido sin esperar una muestra nueva de GPS (así
@@ -837,6 +944,10 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     // Descartamos lecturas demasiado imprecisas para un radio de 110m.
     if (pos.accuracy > radiusMeters * 1.5) return;
 
+    // En segundo plano (con el foreground-service vivo) esta es la vía para
+    // revisar la batería: si estás jugando y quedó muy baja, cerramos el partido.
+    if (isPlaying) unawaited(_maybeEndForLowBattery());
+
     // Cancha más cercana dentro del radio.
     Court? near;
     double best = radiusMeters + 1;
@@ -853,62 +964,109 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     if (isPlaying) {
       // Pausado: congelamos la detección (no arranca la gracia ni se cierra).
       if (_pausedAt != null) return;
-      // ¿Seguimos dentro del radio de la cancha en juego?
-      if (near != null && near.id == _courtId) {
-        // Volvimos (o nunca salimos): se cancela cualquier gracia de salida.
-        if (_outsideSince != null) {
+      final atCourt = near != null && near.id == _courtId;
+
+      if (_outsideSince == null) {
+        // No hay gracia de salida en curso.
+        if (atCourt) return; // todo normal, seguimos jugando
+        // Salimos del radio: arrancamos la gracia de salida (se cierra recién a
+        // los [exitGrace] si seguimos afuera). También la programamos como
+        // alarma para que cierre aunque la app esté minimizada/cerrada.
+        _outsideSince = DateTime.now();
+        _insideSince = null;
+        final pc = _playingCourt;
+        if (pc != null && _startedAt != null) {
+          unawaited(scheduleEndAlarm(
+            userKey: _userKey,
+            courtId: pc.id,
+            courtName: pc.name,
+            lat: pc.lat,
+            lng: pc.lng,
+            startMillis: _startedAt!.millisecondsSinceEpoch,
+            at: _outsideSince!.add(exitGrace),
+          ));
+        }
+        _renderSessionNotif(); // la notif pasa a "termina en…"
+        return;
+      }
+
+      // Ya hay una gracia de salida en curso.
+      if (atCourt) {
+        // Lectura de "volviste". Toleramos [gpsJitterGrace] continuos adentro
+        // antes de cancelar el cierre, para que un salto de GPS no lo cancele.
+        _insideSince ??= DateTime.now();
+        if (DateTime.now().difference(_insideSince!) >= gpsJitterGrace) {
           _outsideSince = null;
+          _insideSince = null;
+          unawaited(cancelEndAlarm());
           _renderSessionNotif(); // la notif vuelve a "jugando"
         }
         return;
       }
-      // Fuera del radio de la cancha actual (o cerca de otra). Arrancamos la
-      // gracia de salida: el partido se corta recién si seguimos fuera de forma
-      // continua durante [exitGrace]. Un salto de GPS o una pausa corta no lo
-      // cierran.
-      if (_outsideSince == null) {
-        _outsideSince = DateTime.now();
-        _renderSessionNotif(); // la notif pasa a "termina en…"
-      }
+
+      // Seguís afuera: descartamos la re-entrada tentativa y evaluamos el cierre.
+      _insideSince = null;
       if (DateTime.now().difference(_outsideSince!) >= exitGrace) {
         _endSession();
-        // Si al cerrar ya estábamos dentro de otra cancha, arrancamos su
-        // permanencia para detectar el próximo partido.
         if (near != null) _beginDwell(near);
       }
       return;
     }
 
-    if (near == null) {
-      // Fuera de toda cancha y sin sesión: resetear permanencia.
-      final wasDwelling = _dwellSince != null;
-      _dwellCourtId = null;
-      _dwellSince = null;
-      if (wasDwelling) _renderSessionNotif();
-      // Ya no hay nada que detectar de cerca y no estamos jugando: si el usuario
-      // NO tiene background activado, cortamos el foreground-service (lo
-      // prendimos para el dwell/partido). Con background on lo gobierna la
-      // geofence, no lo tocamos.
-      if (!_background) _stopStream();
+    // No estamos jugando.
+    // Caso 1: estamos en la cancha del dwell en curso → acumular permanencia.
+    if (_dwellCourtId != null && near != null && near.id == _dwellCourtId) {
+      _dwellOutsideSince = null; // seguimos adentro: no hay salida pendiente
+      if (_dwellSince != null &&
+          DateTime.now().difference(_dwellSince!) >= dwellThreshold) {
+        _startSession(near);
+      } else {
+        // Todavía por debajo del umbral: refrescamos la cuenta regresiva.
+        _renderSessionNotif();
+      }
       return;
     }
 
-    // No estamos jugando: acumular permanencia hasta el umbral.
-    if (_dwellCourtId != near.id) {
-      _beginDwell(near);
-    } else if (_dwellSince != null &&
-        DateTime.now().difference(_dwellSince!) >= dwellThreshold) {
-      _startSession(near);
-    } else {
-      // Misma cancha, todavía por debajo del umbral: refrescamos la cuenta
-      // regresiva de la notificación (texto estático "Arranca en M:SS").
+    // Caso 2: había un dwell en curso pero esta lectura NO es su cancha (salimos
+    // del radio o saltó a otra cancha). Toleramos [gpsJitterGrace] continuos
+    // antes de resetear, para que un salto de GPS no reinicie la cuenta.
+    if (_dwellCourtId != null && _dwellSince != null) {
+      _dwellOutsideSince ??= DateTime.now();
+      if (DateTime.now().difference(_dwellOutsideSince!) < gpsJitterGrace) {
+        return; // dentro de la tolerancia: mantenemos el dwell, esperamos
+      }
+      // Superó la tolerancia: reseteamos la permanencia.
+      _dwellCourtId = null;
+      _dwellSince = null;
+      _dwellOutsideSince = null;
+      unawaited(cancelStartAlarm());
       _renderSessionNotif();
+      // Sigue abajo: si esta lectura cae en otra cancha, arranca dwell nuevo.
+    }
+
+    // Caso 3: sin dwell en curso.
+    if (near != null) {
+      _beginDwell(near); // arranca la permanencia en esta cancha
+    } else if (!_background) {
+      // Fuera de toda cancha y sin background: cortamos el foreground-service.
+      _stopStream();
     }
   }
 
   void _beginDwell(Court c) {
     _dwellCourtId = c.id;
     _dwellSince = DateTime.now();
+    _dwellOutsideSince = null;
+    // Programamos el arranque automático a los [dwellThreshold] min con una
+    // alarma exacta del sistema: dispara aunque la app esté cerrada/dormida.
+    unawaited(scheduleStartAlarm(
+      userKey: _userKey,
+      courtId: c.id,
+      courtName: c.name,
+      lat: c.lat,
+      lng: c.lng,
+      at: _dwellSince!.add(dwellThreshold),
+    ));
     // Arrancamos el foreground-service de ubicación apenas empieza la
     // permanencia. Así, aunque se minimice la app, el isolate sigue vivo y
     // _evaluate corre periódicamente: el partido arranca solo a los 6 min y la
@@ -921,6 +1079,9 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _startSession(Court c) {
+    // Idempotente: si ya estamos jugando en esta cancha, no reiniciamos (evita
+    // doble arranque entre el stream y la alarma de background).
+    if (isPlaying && _courtId == c.id) return;
     _courtId = c.id;
     _courtName = c.name;
     _startedAt = DateTime.now();
@@ -930,6 +1091,11 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     _pausedAt = null;
     _pausedSeconds = 0;
     _outsideSince = null;
+    // Ya arrancó: cancelamos la alarma de arranque (si estaba pendiente) y
+    // arrancamos la vigilancia periódica de batería (red de seguridad en
+    // background por si el SO mata el proceso).
+    unawaited(cancelStartAlarm());
+    unawaited(scheduleBatteryWatch());
     // No registramos nada todavía: jugada, cancha, tiempo, puntos, racha e
     // historial se computan recién al resolver el resultado (resolvePending),
     // con el partido ya terminado y validado por duración. Acá solo persistimos
@@ -940,7 +1106,7 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  void _endSession() {
+  void _endSession({bool lowBattery = false}) {
     onPresenceChanged?.call(false, '', null);
 
     final endedSeconds = _elapsed;
@@ -967,8 +1133,26 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
       endedAtMillis: endedAt.millisecondsSinceEpoch,
     );
     _persistPending();
-    onMatchEnded?.call(endedCourtId, endedAt);
+    onMatchEnded?.call(endedCourtId, endedAt, lowBattery);
     _resetLiveSession();
+  }
+
+  /// Si estás jugando y el equipo quedó con muy poca batería (y sin cargar),
+  /// cerramos el partido para proteger tu información antes de que el SO mate la
+  /// app. Best-effort: si no se puede leer la batería, no hace nada.
+  Future<void> _maybeEndForLowBattery() async {
+    if (!isPlaying || _batteryChecking) return;
+    _batteryChecking = true;
+    try {
+      final state = await _battery.batteryState;
+      if (state == BatteryState.charging || state == BatteryState.full) return;
+      final level = await _battery.batteryLevel;
+      if (isPlaying && level <= batteryEndPercent) {
+        _endSession(lowBattery: true);
+      }
+    } catch (_) {/* sin lectura de batería: ignoramos */} finally {
+      _batteryChecking = false;
+    }
   }
 
   /// Limpia el estado de la sesión en vivo (cancha, cronómetro, pausa) y
@@ -983,12 +1167,19 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     _pausedAt = null;
     _pausedSeconds = 0;
     _outsideSince = null;
+    _insideSince = null;
     // Reseteamos también la permanencia: al terminar un partido (manual o por
     // salir del radio) NO queremos arrancar otro al instante con el dwell viejo
     // ya vencido. Así, si seguís dentro de la cancha, empieza de nuevo la cuenta
     // regresiva de 6 min para el próximo partido.
     _dwellCourtId = null;
     _dwellSince = null;
+    _dwellOutsideSince = null;
+    // Cancelamos cualquier alarma pendiente (arranque/cierre/batería): el estado
+    // quedó resuelto acá.
+    unawaited(cancelStartAlarm());
+    unawaited(cancelEndAlarm());
+    unawaited(cancelBatteryWatch());
     _clearActive();
     _renderSessionNotif();
     notifyListeners();
@@ -1038,8 +1229,12 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
       PlayResult.notCounted => 0,
     };
     // Los puntos por tiempo se multiplican por la duración (incentivo a jugar
-    // partidos largos); los bonus no se multiplican.
-    final timePoints = ((p.seconds ~/ 60) * multiplierFor(p.seconds)).round();
+    // partidos largos); los bonus no se multiplican. El tiempo deja de sumar
+    // puntos a partir de [pointsTimeCap] (~2h, un partido profesional).
+    final scoredSecs = p.seconds > pointsTimeCap.inSeconds
+        ? pointsTimeCap.inSeconds
+        : p.seconds;
+    final timePoints = ((scoredSecs ~/ 60) * multiplierFor(scoredSecs)).round();
     final gained =
         timePoints + resultBonus + streakBonus + (isNewCourt ? 30 : 0);
     _points += gained;
@@ -1233,6 +1428,11 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _posSub?.cancel();
+    if (_playPort != null) {
+      IsolateNameServer.removePortNameMapping(kPlayPortName);
+      _playPort!.close();
+      _playPort = null;
+    }
     super.dispose();
   }
 }

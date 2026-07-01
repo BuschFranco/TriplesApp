@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/app_loading_state.dart';
 import '../services/courts_provider.dart';
-import '../services/notifications_service.dart';
 import '../services/play_session_service.dart';
 import '../services/profiles_provider.dart';
 import '../theme/app_theme.dart';
@@ -39,15 +38,9 @@ class _MainShellState extends State<MainShell> {
     _loaderTimer = Timer(const Duration(seconds: 6), () {
       if (mounted) setState(() => _loaderTimedOut = true);
     });
-    // Permiso de notificaciones tras el primer frame: no interfiere con el
-    // arranque de la UI ni del mapa. Si el SO ya las tiene habilitadas (algunos
-    // equipos las auto-conceden), no se vuelve a pedir.
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final ns = NotificationsService.instance;
-      if (!await ns.isEnabled()) {
-        await ns.requestPermission();
-      }
-    });
+    // Los permisos (ubicación, notificaciones, alarmas) NO se piden solos al
+    // abrir la app: los pide el modal de permisos sobre el mapa cuando el
+    // usuario activa cada switch.
   }
 
   @override

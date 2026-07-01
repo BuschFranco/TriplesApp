@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
@@ -41,6 +43,11 @@ void main() async {
   unawaited(NotificationsService.instance.init());
   // Geofencing (detecta llegada a una cancha sin notificación persistente).
   unawaited(GeofenceService.instance.init());
+  // Alarmas del sistema: arranque/cierre automático del partido en segundo
+  // plano (a los 6 min), aunque la app esté minimizada o cerrada. Solo Android.
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    unawaited(AndroidAlarmManager.initialize());
+  }
 
   // Crea (si faltan) las columnas que usan las features nuevas. Idempotente y
   // sin bloquear el arranque: si falla por permisos, la app sigue funcionando.

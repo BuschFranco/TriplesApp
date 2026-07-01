@@ -14,6 +14,7 @@ import '../services/session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_chip.dart';
 import '../widgets/court_image.dart';
+import '../widgets/permissions_modal.dart';
 import '../widgets/rating_badge.dart';
 import '../widgets/status_dot.dart';
 
@@ -77,9 +78,11 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   int _index = 0;
   GoogleMapController? _mapCtrl;
+  // Evita apilar el modal de permisos.
+  bool _permOpen = false;
   // Estado de carga inicial (loader del shell). Se captura en initState para no
   // depender del context tras awaits.
   late final AppLoadingState _loading = context.read<AppLoadingState>();
@@ -190,12 +193,11 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _ensureUserPosition() async {
     try {
-      LocationPermission perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
-      }
-      if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
+      final perm = await Geolocator.checkPermission();
+      if (perm != LocationPermission.always &&
+          perm != LocationPermission.whileInUse) {
+        // Sin permiso: no lo pedimos acá, abrimos el modal de permisos.
+        await _maybeShowPerms();
         return;
       }
       final pos = await Geolocator.getCurrentPosition(
@@ -252,6 +254,22 @@ class _HomeScreenState extends State<HomeScreen>
     _startLocationUpdates();
     // La detección de partidos (presencia, batch, sembrado y canchas) la cablea
     // SyncCoordinator al arrancar la app; HomeScreen ya no orquesta nada de eso.
+    WidgetsBinding.instance.addObserver(this);
+    // Modal de permisos sobre el mapa (si falta ubicación / notif / alarmas).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowPerms());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _maybeShowPerms();
+  }
+
+  /// Muestra el modal de permisos si falta alguno. Evita apilarlo.
+  Future<void> _maybeShowPerms() async {
+    if (_permOpen || !mounted) return;
+    _permOpen = true;
+    await PermissionsModal.showIfNeeded(context);
+    if (mounted) _permOpen = false;
   }
 
   /// Sigue la ubicación en vivo para mover el punto azul a medida que el usuario
@@ -259,12 +277,11 @@ class _HomeScreenState extends State<HomeScreen>
   /// GPS real: la ubicación la fija el tap en el mapa.
   Future<void> _startLocationUpdates() async {
     try {
-      LocationPermission perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
-      }
-      if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
+      // NO pedimos permiso acá: lo pide el modal de permisos cuando el usuario
+      // activa el switch. Solo arrancamos el stream si ya está concedido.
+      final perm = await Geolocator.checkPermission();
+      if (perm != LocationPermission.always &&
+          perm != LocationPermission.whileInUse) {
         return;
       }
       _posStream = Geolocator.getPositionStream(
@@ -343,6 +360,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _posStream?.cancel();
     _pulseCtrl.dispose();
     _mapCtrl?.dispose();
@@ -755,6 +773,9 @@ class _HomeScreenState extends State<HomeScreen>
                                 color: AppColors.accent),
                           ),
                         ),
+                        // Puntos por tiempo acumulándose en vivo, con animación.
+                        const SizedBox(width: 8),
+                        _LivePoints(ps.currentTimePoints),
                       ],
                     ],
                   ),
@@ -975,12 +996,13 @@ class _HomeScreenState extends State<HomeScreen>
     if (_locating) return;
     setState(() => _locating = true);
     try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return;
+      final permission = await Geolocator.checkPermission();
+      if (permission != LocationPermission.always &&
+          permission != LocationPermission.whileInUse) {
+        // Sin permiso: no lo pedimos acá, abrimos el modal de permisos.
+        await _maybeShowPerms();
+        return;
       }
-      if (permission == LocationPermission.deniedForever) return;
 
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
@@ -1413,6 +1435,63 @@ class _CourtSwipeCard extends StatelessWidget {
           border: Border.all(color: AppColors.white(0.08)),
         ),
         child: Icon(icon, color: Colors.white, size: 16),
+      ),
+    );
+  }
+}
+
+/// Puntos por tiempo acumulándose en vivo: cuenta suavemente hasta el valor
+/// nuevo y da un pequeño "pop" cada vez que incrementa.
+class _LivePoints extends StatefulWidget {
+  final int points;
+  const _LivePoints(this.points);
+
+  @override
+  State<_LivePoints> createState() => _LivePointsState();
+}
+
+class _LivePointsState extends State<_LivePoints>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pop = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 280),
+  );
+  late final Animation<double> _scale = TweenSequence<double>([
+    TweenSequenceItem(
+        tween: Tween(begin: 1.0, end: 1.25)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 1),
+    TweenSequenceItem(
+        tween: Tween(begin: 1.25, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeIn)),
+        weight: 1),
+  ]).animate(_pop);
+
+  @override
+  void didUpdateWidget(_LivePoints old) {
+    super.didUpdateWidget(old);
+    if (old.points != widget.points) _pop.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _pop.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: _scale,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween<double>(end: widget.points.toDouble()),
+        duration: const Duration(milliseconds: 600),
+        curve: Curves.easeOut,
+        builder: (_, v, _) => Text(
+          '+${v.round()} pts',
+          style: AppText.archivo(
+              size: 12, weight: FontWeight.w900, color: AppColors.accent),
+        ),
       ),
     );
   }

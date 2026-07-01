@@ -64,11 +64,19 @@ class SyncCoordinator {
 
     // Terminó un partido válido: avisamos para que registre el resultado y
     // guardamos el "último partido" (cancha + momento) para mostrar a los amigos.
-    _play.onMatchEnded = (courtId, endedAt) {
-      NotificationsService.instance.show(
-        'Terminó tu partido',
-        'Abrí 1of1 para registrar el resultado.',
-      );
+    _play.onMatchEnded = (courtId, endedAt, lowBattery) {
+      if (lowBattery) {
+        NotificationsService.instance.show(
+          'Partido terminado por batería baja',
+          'Cerramos tu partido para proteger tu información. Abrí 1of1 para '
+              'registrar el resultado.',
+        );
+      } else {
+        NotificationsService.instance.show(
+          'Terminó tu partido',
+          'Abrí 1of1 para registrar el resultado.',
+        );
+      }
       _session.setLastPlayed(courtId: courtId, at: endedAt);
     };
 

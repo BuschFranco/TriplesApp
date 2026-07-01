@@ -18,6 +18,8 @@ dependencies:
   google_maps_flutter_platform_interface: any
   http: ^1.2.0
   geolocator: ^13.0.0
+  android_alarm_manager_plus: ^4.0.4
+  battery_plus: ^6.0.0
   shared_preferences: ^2.3.0
   crypto: ^3.0.3
   provider: ^6.1.2
