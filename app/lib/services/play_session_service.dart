@@ -1322,6 +1322,7 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
         avgHr: hm?.avgHr,
         maxHr: hm?.maxHr,
         steps: hm?.steps ?? 0,
+        distance: hm?.distance ?? 0,
         calorieRecord: newCalorieRecord,
       ),
     );
@@ -1423,6 +1424,10 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
   /// ¿Está Health Connect disponible en el dispositivo? (para decidir si vale
   /// la pena ofrecer la conexión).
   Future<bool> healthAvailable() => _health.isAvailable();
+
+  /// Prueba de lectura de salud (para diagnosticar por qué un partido no trae
+  /// datos): devuelve un resumen legible de las últimas horas.
+  Future<String> diagnoseHealth() => _health.diagnose();
 
   /// Siembra el récord de calorías desde el perfil (Notion) al iniciar sesión,
   /// para que sobreviva a reinstalar sin poder re-farmearse. Solo sube: nunca
@@ -1663,6 +1668,8 @@ class PlaySession {
   final int? maxHr;
   /// Pasos registrados durante el partido.
   final int steps;
+  /// Distancia recorrida durante el partido, en metros.
+  final double distance;
 
   /// ¿Este partido marcó un récord personal de calorías? (para destacarlo).
   final bool calorieRecord;
@@ -1678,10 +1685,12 @@ class PlaySession {
     this.avgHr,
     this.maxHr,
     this.steps = 0,
+    this.distance = 0,
     this.calorieRecord = false,
   });
 
-  bool get hasHealth => calories > 0 || steps > 0 || avgHr != null;
+  bool get hasHealth =>
+      calories > 0 || steps > 0 || avgHr != null || distance > 0;
 
   PlaySession withResult(
     PlayResult r, {
@@ -1690,6 +1699,7 @@ class PlaySession {
     int? avgHr,
     int? maxHr,
     int steps = 0,
+    double distance = 0,
     bool calorieRecord = false,
   }) =>
       PlaySession(
@@ -1703,6 +1713,7 @@ class PlaySession {
         avgHr: avgHr,
         maxHr: maxHr,
         steps: steps,
+        distance: distance,
         calorieRecord: calorieRecord,
       );
 
@@ -1717,6 +1728,7 @@ class PlaySession {
         'avgHr': avgHr,
         'maxHr': maxHr,
         'steps': steps,
+        'distance': distance,
         'calorieRecord': calorieRecord,
       };
 
@@ -1731,6 +1743,7 @@ class PlaySession {
         avgHr: (j['avgHr'] as num?)?.toInt(),
         maxHr: (j['maxHr'] as num?)?.toInt(),
         steps: (j['steps'] as num?)?.toInt() ?? 0,
+        distance: (j['distance'] as num?)?.toDouble() ?? 0,
         calorieRecord: (j['calorieRecord'] as bool?) ?? false,
       );
 }

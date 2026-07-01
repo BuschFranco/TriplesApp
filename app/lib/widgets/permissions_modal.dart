@@ -177,6 +177,35 @@ class _PermissionsModalState extends State<PermissionsModal>
     }
   }
 
+  /// Corre una lectura de prueba y muestra el resultado, para entender por qué
+  /// un partido no trae datos (permiso, sin muestras, o error).
+  Future<void> _testHealth() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final report = await context.read<PlaySessionService>().diagnoseHealth();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.bgElev,
+        title: Text('Lectura de salud',
+            style: AppText.archivo(size: 18, weight: FontWeight.w800)),
+        content: SingleChildScrollView(
+          child: Text(report,
+              style: AppText.grotesk(size: 13, color: AppColors.white(0.8))),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Cerrar',
+                style: AppText.grotesk(size: 13, color: AppColors.accent)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _healthRow() {
     final enabled = context.watch<PlaySessionService>().healthEnabled;
     return Padding(
@@ -220,6 +249,26 @@ class _PermissionsModalState extends State<PermissionsModal>
                   style:
                       AppText.grotesk(size: 11, color: AppColors.white(0.5)),
                 ),
+                if (enabled) ...[
+                  const SizedBox(height: 6),
+                  GestureDetector(
+                    onTap: _busy ? null : _testHealth,
+                    behavior: HitTestBehavior.opaque,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.science_outlined,
+                            size: 13, color: AppColors.accent),
+                        const SizedBox(width: 4),
+                        Text('Probar lectura',
+                            style: AppText.grotesk(
+                                size: 12,
+                                weight: FontWeight.w700,
+                                color: AppColors.accent)),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

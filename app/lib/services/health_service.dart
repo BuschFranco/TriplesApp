@@ -8,16 +8,20 @@ class HealthMetrics {
   final int? avgHr;
   final int? maxHr;
   final int steps;
+  /// Distancia recorrida durante el partido, en metros.
+  final double distance;
 
   const HealthMetrics({
     this.calories = 0,
     this.avgHr,
     this.maxHr,
     this.steps = 0,
+    this.distance = 0,
   });
 
   /// ¿Hay algo que valga la pena registrar? (sin wearable suele venir todo en 0)
-  bool get hasData => calories > 0 || steps > 0 || avgHr != null;
+  bool get hasData =>
+      calories > 0 || steps > 0 || avgHr != null || distance > 0;
 }
 
 /// Wrapper del paquete `health`: lee del store unificado del OS (Health Connect
@@ -31,7 +35,9 @@ class HealthService {
   bool _configured = false;
 
   /// Tipos que leemos. Calorías activas es la métrica que da puntos (récord);
-  /// el resto es registro visual en el historial.
+  /// pulso y pasos son registro visual en el historial. OJO: si se pidieran
+  /// varios tipos en UNA sola llamada y uno fallara (permiso/soporte), Health
+  /// Connect tira excepción y se cae toda la lectura; por eso leemos por tipo.
   static const List<HealthDataType> _types = [
     HealthDataType.HEART_RATE,
     HealthDataType.ACTIVE_ENERGY_BURNED,
@@ -80,6 +86,63 @@ class HealthService {
     }
   }
 
+  /// Diagnóstico: lee las últimas [back] horas y devuelve un resumen legible
+  /// (estado de Health Connect, muestras por tipo, agregados y error si falla).
+  /// Sirve para entender por qué un partido no trae datos de salud.
+  Future<String> diagnose({Duration back = const Duration(hours: 6)}) async {
+    final sb = StringBuffer();
+    try {
+      await _ensureConfigured();
+    } catch (e) {
+      return 'No se pudo inicializar salud:\n$e';
+    }
+    HealthConnectSdkStatus? status;
+    try {
+      status = await _health.getHealthConnectSdkStatus();
+    } catch (_) {}
+    sb.writeln('Health Connect: ${status ?? 'desconocido'}');
+    // En Android este chequeo es poco confiable para permisos de LECTURA (los
+    // oculta): true = concedido; false = denegado; null = no se puede saber.
+    Object? perm;
+    try {
+      perm = await _health.hasPermissions(_types, permissions: _perms);
+    } catch (e) {
+      perm = 'error: $e';
+    }
+    sb.writeln('Permiso lectura: $perm');
+    sb.writeln('Ventana: últimas ${back.inHours}h');
+    sb.writeln('');
+
+    final end = DateTime.now();
+    final start = end.subtract(back);
+    // Un renglón por tipo: cantidad de muestras y agregado, o el error puntual.
+    for (final t in _types) {
+      try {
+        final points = await _health.getHealthDataFromTypes(
+          startTime: start,
+          endTime: end,
+          types: [t],
+        );
+        final clean = _health.removeDuplicates(points);
+        double sum = 0;
+        for (final p in clean) {
+          final v = p.value;
+          if (v is NumericHealthValue) sum += v.numericValue.toDouble();
+        }
+        final agg = switch (t) {
+          HealthDataType.ACTIVE_ENERGY_BURNED => ' · ${sum.round()} kcal',
+          HealthDataType.STEPS => ' · ${sum.round()} pasos',
+          HealthDataType.DISTANCE_DELTA => ' · ${sum.round()} m',
+          _ => '',
+        };
+        sb.writeln('${t.name}: ${clean.length} muestras$agg');
+      } catch (e) {
+        sb.writeln('${t.name}: ERROR → $e');
+      }
+    }
+    return sb.toString();
+  }
+
   /// Agrega las métricas de salud en la ventana [start, end] del partido.
   /// Devuelve null si no hay permiso o falla la lectura (el llamador lo trata
   /// como "sin datos", sin romper el flujo).
@@ -87,54 +150,60 @@ class HealthService {
     if (end.isBefore(start)) return null;
     try {
       await _ensureConfigured();
-      // OJO: en Android, Health Connect NO deja consultar de forma confiable si
-      // el permiso de LECTURA está concedido (lo oculta por privacidad) y
-      // hasPermissions devuelve null. Por eso NO gateamos acá: intentamos leer
-      // directo y, si no hay permiso, la lectura falla/viene vacía y lo tratamos
-      // como "sin datos". El opt-in real ya lo controla el flag del servicio.
-      final points = await _health.getHealthDataFromTypes(
-        startTime: start,
-        endTime: end,
-        types: _types,
-      );
-      final clean = _health.removeDuplicates(points);
-
-      double calories = 0;
-      int steps = 0;
-      final hrs = <double>[];
-      for (final p in clean) {
-        final v = p.value;
-        final num n = v is NumericHealthValue ? v.numericValue : 0;
-        switch (p.type) {
-          case HealthDataType.ACTIVE_ENERGY_BURNED:
-            calories += n.toDouble();
-            break;
-          case HealthDataType.STEPS:
-            steps += n.toInt();
-            break;
-          case HealthDataType.HEART_RATE:
-            if (n > 0) hrs.add(n.toDouble());
-            break;
-          default:
-            break;
-        }
-      }
-
-      int? avgHr;
-      int? maxHr;
-      if (hrs.isNotEmpty) {
-        avgHr = (hrs.reduce((a, b) => a + b) / hrs.length).round();
-        maxHr = hrs.reduce((a, b) => a > b ? a : b).round();
-      }
-
-      return HealthMetrics(
-        calories: calories,
-        avgHr: avgHr,
-        maxHr: maxHr,
-        steps: steps,
-      );
     } catch (_) {
       return null;
     }
+    // Leemos CADA tipo por separado: si uno falla (permiso/soporte), no anula
+    // la lectura de los demás. En Android no se puede verificar el permiso de
+    // LECTURA (Health Connect lo oculta), así que intentamos leer directo.
+    double calories = 0;
+    int steps = 0;
+    double distance = 0;
+    final hrs = <double>[];
+    for (final t in _types) {
+      try {
+        final points = await _health.getHealthDataFromTypes(
+          startTime: start,
+          endTime: end,
+          types: [t],
+        );
+        final clean = _health.removeDuplicates(points);
+        for (final p in clean) {
+          final v = p.value;
+          final num n = v is NumericHealthValue ? v.numericValue : 0;
+          switch (p.type) {
+            case HealthDataType.ACTIVE_ENERGY_BURNED:
+              calories += n.toDouble();
+              break;
+            case HealthDataType.STEPS:
+              steps += n.toInt();
+              break;
+            case HealthDataType.DISTANCE_DELTA:
+              distance += n.toDouble();
+              break;
+            case HealthDataType.HEART_RATE:
+              if (n > 0) hrs.add(n.toDouble());
+              break;
+            default:
+              break;
+          }
+        }
+      } catch (_) {/* seguimos con los demás tipos */}
+    }
+
+    int? avgHr;
+    int? maxHr;
+    if (hrs.isNotEmpty) {
+      avgHr = (hrs.reduce((a, b) => a + b) / hrs.length).round();
+      maxHr = hrs.reduce((a, b) => a > b ? a : b).round();
+    }
+
+    return HealthMetrics(
+      calories: calories,
+      avgHr: avgHr,
+      maxHr: maxHr,
+      steps: steps,
+      distance: distance,
+    );
   }
 }
