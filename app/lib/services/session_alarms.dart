@@ -43,7 +43,7 @@ const String _kActiveBase = 'play_active_session';
 const String _kPendingBase = 'play_pending_result';
 
 // Constantes espejo de PlaySessionService (mantener en sync).
-const double _kRadiusMeters = 125;
+const double _kRadiusMeters = 110;
 const int _kMinMatchSeconds = 13 * 60;
 const int _kBatteryEndPercent = 5;
 const Duration _kBatteryWatchEvery = Duration(minutes: 15);

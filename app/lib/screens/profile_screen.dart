@@ -377,19 +377,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ],
           ),
         ),
-        const SizedBox(height: 10),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: _totalTimeCard(),
-        ),
         const SizedBox(height: 24),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SectionTitle(title: 'Tiempo jugado'),
-              _playTimeSection(),
+              const SectionTitle(title: 'Canchas más jugadas'),
+              _topCourtsSection(),
               const SizedBox(height: 24),
               const SectionTitle(title: 'Favoritos'),
               _favoritesSection(),
@@ -662,92 +657,102 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  /// Tiempo total general (todas las canchas). Va pegado justo debajo del grid
-  /// de stats.
-  Widget _totalTimeCard() {
-    final total = context.watch<PlaySessionService>().totalSeconds;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-      decoration: BoxDecoration(
-        color: const Color(0x801A2430),
-        border: Border.all(color: AppColors.white(0.06)),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.timer_outlined, color: AppColors.accent, size: 22),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Total',
-                  style: AppText.grotesk(size: 11, color: AppColors.white(0.5))),
-              const SizedBox(height: 2),
-              Text(
-                PlaySessionService.fmt(total),
-                style: AppText.archivo(
-                    size: 20, weight: FontWeight.w900, color: AppColors.accent),
-              ),
-            ],
-          ),
+  /// Ranking de las 3 canchas más jugadas (por tiempo) + el tiempo total como
+  /// dato aislado y pequeño debajo.
+  Widget _topCourtsSection() {
+    final ps = context.watch<PlaySessionService>();
+    // breakdown viene ordenado de mayor a menor tiempo: tomamos el top 3.
+    final top = ps.breakdown.where((e) => e.seconds > 0).take(3).toList();
+    if (top.isEmpty) {
+      return _emptyCard('Todavía no jugaste en ninguna cancha.');
+    }
+    return Column(
+      children: [
+        for (var i = 0; i < top.length; i++) ...[
+          if (i > 0) const SizedBox(height: 8),
+          _topCourtRow(i + 1, top[i]),
         ],
+        const SizedBox(height: 12),
+        _totalTimeInline(ps.totalSeconds),
+      ],
+    );
+  }
+
+  /// Colores de podio para el puesto (1º oro, 2º plata, 3º bronce).
+  Color _rankColor(int rank) {
+    switch (rank) {
+      case 1:
+        return const Color(0xFFFFD24A); // oro
+      case 2:
+        return const Color(0xFFC9D1D9); // plata
+      default:
+        return const Color(0xFFCD8B5B); // bronce
+    }
+  }
+
+  Widget _topCourtRow(int rank, ({String courtId, String name, int seconds}) e) {
+    final color = _rankColor(rank);
+    return GestureDetector(
+      onTap: () => widget.onSelectCourt?.call(e.courtId),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0x801A2430),
+          border: Border.all(color: AppColors.white(0.06)),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            // Medalla / puesto.
+            Container(
+              width: 26,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: color.withAlpha(38),
+                shape: BoxShape.circle,
+                border: Border.all(color: color.withAlpha(150)),
+              ),
+              child: Text('$rank',
+                  style: AppText.archivo(
+                      size: 13, weight: FontWeight.w900, color: color)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                e.name.isEmpty ? 'Cancha' : e.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppText.grotesk(size: 13, weight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              PlaySessionService.fmt(e.seconds),
+              style: AppText.grotesk(
+                  size: 13, weight: FontWeight.w700, color: AppColors.accent),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _playTimeSection() {
-    final ps = context.watch<PlaySessionService>();
-    final items =
-        ps.breakdown.where((e) => e.seconds > 0).toList().reversed.toList();
-    return Column(
-      children: [
-        // Desglose por cancha.
-        for (final e in items) ...[
-          const SizedBox(height: 8),
-          GestureDetector(
-            onTap: () => widget.onSelectCourt?.call(e.courtId),
-            behavior: HitTestBehavior.opaque,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: const Color(0x801A2430),
-                border: Border.all(color: AppColors.white(0.06)),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.place_outlined,
-                      size: 16, color: AppColors.white(0.45)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      e.name.isEmpty ? 'Cancha' : e.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.grotesk(size: 13, weight: FontWeight.w600),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    PlaySessionService.fmt(e.seconds),
-                    style: AppText.grotesk(
-                        size: 13, weight: FontWeight.w700, color: AppColors.accent),
-                  ),
-                ],
-              ),
-            ),
+  /// Tiempo total jugado como dato chico y aislado (debajo del ranking).
+  Widget _totalTimeInline(int total) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, left: 2),
+      child: Row(
+        children: [
+          Icon(Icons.timer_outlined, size: 13, color: AppColors.white(0.4)),
+          const SizedBox(width: 6),
+          Text(
+            'Tiempo total jugado · ${PlaySessionService.fmt(total)}',
+            style: AppText.grotesk(size: 11, color: AppColors.white(0.45)),
           ),
         ],
-        if (items.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              'Todavía no jugaste en ninguna cancha.',
-              style: AppText.grotesk(size: 12, color: AppColors.white(0.45)),
-            ),
-          ),
-      ],
+      ),
     );
   }
 

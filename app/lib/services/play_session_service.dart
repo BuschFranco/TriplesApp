@@ -19,12 +19,17 @@ import 'session_alarms.dart';
 /// Fase 1 (foreground): muestrea la ubicación cada [_sampleEvery] mientras la
 /// app está abierta. El tiempo activo se persiste cada 60s para no perderlo.
 class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
-  static const double radiusMeters = 125;
+  static const double radiusMeters = 110;
   static const Duration dwellThreshold = Duration(minutes: 6);
   // Tolerancia a saltos de GPS: al salir del radio (durante la cuenta de inicio)
   // o al re-entrar (durante la cuenta de cierre), esperamos este tiempo continuo
   // antes de resetear/cancelar, para que un salto accidental no reinicie nada.
-  static const Duration gpsJitterGrace = Duration(seconds: 7);
+  // 15s cubre una lectura de GPS perdida (el muestreo en background es ~10s).
+  static const Duration gpsJitterGrace = Duration(seconds: 15);
+  // Si al reabrir la app el "latido" del partido es más viejo que esto, asumimos
+  // que el proceso estuvo caído (apagado / kill) y guardamos el partido con el
+  // tiempo jugado hasta ese latido, en vez de resumirlo con tiempo inflado.
+  static const Duration resumeGapMax = Duration(minutes: 3);
   // Período de gracia de salida: con una sesión activa, el partido NO se corta
   // apenas el GPS te ubica fuera del radio. Recién se cierra si seguís fuera de
   // forma continua durante este tiempo (tolera saltos de señal y pausas cortas).
@@ -964,6 +969,9 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     if (isPlaying) {
       // Pausado: congelamos la detección (no arranca la gracia ni se cierra).
       if (_pausedAt != null) return;
+      // Latido: dejamos registrado que el partido sigue vivo (también en
+      // background mientras el foreground-service entregue ubicaciones).
+      unawaited(_persistActive());
       final atCourt = near != null && near.id == _courtId;
 
       if (_outsideSince == null) {
@@ -1033,7 +1041,16 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
     if (_dwellCourtId != null && _dwellSince != null) {
       _dwellOutsideSince ??= DateTime.now();
       if (DateTime.now().difference(_dwellOutsideSince!) < gpsJitterGrace) {
-        return; // dentro de la tolerancia: mantenemos el dwell, esperamos
+        // Dentro de la tolerancia: asumimos que es un salto de GPS y seguís en
+        // la cancha. Si el umbral YA se cumplió mientras "salías", arrancamos
+        // igual (no perdemos la cuenta por un salto justo sobre el final). Si
+        // realmente te fuiste, la gracia de salida cerrará el partido enseguida.
+        final c = _dwellCourt;
+        if (c != null &&
+            DateTime.now().difference(_dwellSince!) >= dwellThreshold) {
+          _startSession(c);
+        }
+        return; // seguimos esperando (mantenemos el dwell)
       }
       // Superó la tolerancia: reseteamos la permanencia.
       _dwellCourtId = null;
@@ -1267,6 +1284,10 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
         'courtId': _courtId,
         'courtName': _courtName,
         'startMillis': _startedAt!.millisecondsSinceEpoch,
+        // "Latido": última vez que el partido estuvo efectivamente en curso. Si
+        // el proceso se corta (apagado / kill), al reabrir sabemos hasta cuándo
+        // se jugó realmente y guardamos el partido con ese tiempo (no inflado).
+        'lastSeenMillis': DateTime.now().millisecondsSinceEpoch,
       }),
     );
   }
@@ -1399,15 +1420,42 @@ class PlaySessionService extends ChangeNotifier with WidgetsBindingObserver {
         final j = jsonDecode(raw) as Map<String, dynamic>;
         final start = DateTime.fromMillisecondsSinceEpoch(
             (j['startMillis'] as num).toInt());
-        // Solo retomamos sesiones recientes (< 6h); la próxima muestra la
-        // valida (si ya no estás cerca, se cierra sola).
-        if (DateTime.now().difference(start) > const Duration(hours: 6)) {
+        final lastSeen = j['lastSeenMillis'] != null
+            ? DateTime.fromMillisecondsSinceEpoch(
+                (j['lastSeenMillis'] as num).toInt())
+            : start;
+        final courtId = j['courtId'] as String?;
+        final courtName = j['courtName'] as String?;
+        final now = DateTime.now();
+
+        if (now.difference(start) > const Duration(hours: 6)) {
+          // Demasiado vieja: la descartamos.
           await _clearActive();
+        } else if (now.difference(lastSeen) > resumeGapMax) {
+          // El proceso estuvo caído (apagado / kill) mientras jugabas: el
+          // partido se jugó hasta [lastSeen]. Lo GUARDAMOS con ese tiempo (no
+          // resumimos con tiempo inflado). Si fue muy corto (< minMatch) se
+          // descarta según la regla habitual.
+          final seconds = lastSeen.difference(start).inSeconds;
+          if (seconds >= minMatch.inSeconds) {
+            _pendingSession = PlaySession(
+              courtId: courtId ?? '',
+              courtName: courtName ?? '',
+              seconds: seconds,
+              endedAtMillis: lastSeen.millisecondsSinceEpoch,
+            );
+            await _persistPending();
+          }
+          await _clearActive();
+          unawaited(cancelStartAlarm());
+          unawaited(cancelEndAlarm());
+          unawaited(cancelBatteryWatch());
         } else {
-          _courtId = j['courtId'] as String?;
-          _courtName = j['courtName'] as String?;
+          // Hueco chico: seguíamos jugando (foreground/servicio vivo). Resume.
+          _courtId = courtId;
+          _courtName = courtName;
           _startedAt = start;
-          _elapsed = DateTime.now().difference(start).inSeconds;
+          _elapsed = now.difference(start).inSeconds;
           _lastSavedAt = _elapsed;
           // El tiempo de la sesión en curso todavía NO está en los totales (se
           // vuelca al resolver). Lo dejamos como pendiente para que el
