@@ -518,6 +518,9 @@ class DetailScreen extends StatelessWidget {
 
   Widget _bottomCta(Court court) {
     return Row(
+      // Anclados a la esquina inferior derecha: favoritos a la izquierda del
+      // botón de localización.
+      mainAxisAlignment: MainAxisAlignment.end,
       children: [
         Builder(builder: (context) {
           final isFav = context.watch<FavoritesProvider>().isFavorite(court.id);
